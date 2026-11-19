@@ -30,6 +30,7 @@ import {
   routeBySession,
   runPrintMode,
   settledAgent,
+  toolResultsNamed,
 } from "./helpers/print-mode-runner.js";
 
 // Real pi-mono (loader + dynamic extension import + two live sessions) — a cold
@@ -85,18 +86,23 @@ describe.skipIf(LIVE)("subagents print-mode e2e (scripted faux, real pi-mono)", 
     expect(invocation?.thinking).not.toBe("");
   });
 
-  it("reaches the parent through notification, not through the acceptance receipt", async () => {
+  it("wakes the idle parent through notification, not a synthetic prompt or the acceptance receipt", async () => {
+    const parentSettled = Promise.withResolvers<void>();
     run = await runPrintMode({
       agentFiles: { worker: testAgentFile("worker") },
       prompt: "Delegate the greeting.",
+      onParentSession: (session) => session.subscribe(event => {
+        if (event.type === "agent_settled") parentSettled.resolve();
+      }),
       respond: routeBySession({
         parentInitial: agentCall({ subagent_type: "worker", description: "greet", prompt: "Say hello." }),
         parentFinal: (context) => context.messages.some(m => m.role === "user" && m.content.some(b =>
           b.type === "text" && b.text.includes("<task-notification>") && b.text.includes("CHILD_GREETING_OK")))
           ? "Parent relays: CHILD_GREETING_OK" : "Awaiting the child.",
-        subagent: "CHILD_GREETING_OK",
+        subagent: () => parentSettled.promise.then(() => "CHILD_GREETING_OK"),
       }),
     });
+    expect(run.parentSession.messages.filter(m => m.role === "user")).toHaveLength(1);
     const [receipt] = agentToolResults(run.parentSession);
     const record = settledAgent(run);
     expect(receipt).toContain(`Agent ID: ${record.id}`);
@@ -333,10 +339,11 @@ describe.skipIf(LIVE)("subagents print-mode e2e (scripted faux, real pi-mono)", 
 // (background spawn, get_subagent_result, a Surveyor spawn)
 // and assert robust invariants (a real spawn happened and produced output).
 // Per-feature determinism lives in the faux suite above, which scripts exact calls.
+// One spawn includes the parent's dispatch and follow-up, a child request,
+// and (for retrieval) another parent tool round. Keep the existing live
+// budget; a fixture accidentally selecting a different provider is not latency.
 const LIVE_TIMEOUT = 150_000;
-// SELF-SMOKE chains three live spawns in one session; passing runs land ~145s,
-// but live variance (slow turns, provider retries, extra polling) has blown past
-// 2× that — give it 4× so the smoke doesn't flake on latency alone.
+// SELF-SMOKE chains three spawns and their parent turns under one guard.
 const SELF_SMOKE_TIMEOUT = 600_000;
 // The vitest per-test timer starts before runPrintMode and should not fire
 // first: the runner's own timeoutMs guard produces a descriptive error and
@@ -345,6 +352,23 @@ const SELF_SMOKE_TIMEOUT = 600_000;
 const VITEST_SLACK = 30_000;
 const LIVE_VITEST_TIMEOUT = LIVE_TIMEOUT + VITEST_SLACK;
 const SELF_SMOKE_VITEST_TIMEOUT = SELF_SMOKE_TIMEOUT + VITEST_SLACK;
+
+// Live needs the local model registry/auth. Give the model an unambiguous
+// fixture type rather than a name shared with a global Worker and its model pin.
+const LIVE_ECHO_TYPE = "print-mode-echo";
+const WAIT_FOR_NOTIFICATION = "End the current turn after dispatch; do not poll, sleep, or respawn. On completion notification, ";
+const DISPATCH_ARGS = "Pass only subagent_type, description, and prompt to Agent. ";
+
+function liveSmoke(prompt: string, timeoutMs = LIVE_TIMEOUT) {
+  return runPrintMode({
+    agentFiles: { [LIVE_ECHO_TYPE]: testAgentFile(LIVE_ECHO_TYPE), Surveyor: testAgentFile("Surveyor", "read, ls") },
+    // A user's custom Agent description may advertise removed tool arguments.
+    // Exercise the current built-in description without changing local config.
+    beforeRun: () => writeFileSync(join(".pi", "subagents.json"), JSON.stringify({ toolDescriptionMode: "full" })),
+    prompt,
+    timeoutMs,
+  });
+}
 
 describe.runIf(LIVE)("subagents print-mode e2e (live LLM, opt-in)", () => {
   let run: PrintModeRun | undefined;
@@ -356,16 +380,14 @@ describe.runIf(LIVE)("subagents print-mode e2e (live LLM, opt-in)", () => {
   it(
     "Background spawn — real model spawns a subagent and reports its output",
     async () => {
-      run = await runPrintMode({
-        agentFiles: { worker: testAgentFile("worker"), Surveyor: testAgentFile("Surveyor", "read, ls") },
-        prompt:
-          "Use the Agent tool to spawn a worker subagent " +
-          "whose only task is to reply with the exact word PONG, then tell me what it replied.",
-        timeoutMs: LIVE_TIMEOUT,
-      });
+      run = await liveSmoke(
+        `Use the Agent tool with subagent_type '${LIVE_ECHO_TYPE}' to get the exact word PONG. ` +
+        `${DISPATCH_ARGS}${WAIT_FOR_NOTIFICATION}tell me what the subagent replied. Do not use get_subagent_result for this test.`,
+      );
       expect(run.modelCalls).toBe(0); // live mode doesn't use the faux counter
       expect(invokedToolNames(run.parentSession)).toContain("Agent");
-      expect(settledAgent(run).result).toMatch(/PONG/i);
+      expect(settledAgent(run)).toMatchObject({ type: LIVE_ECHO_TYPE, result: expect.stringMatching(/PONG/i) });
+      expect(completionText(run.parentSession)).toMatch(/PONG/i);
       expect(run.responseText).toMatch(/PONG/i);
     },
     LIVE_VITEST_TIMEOUT,
@@ -374,20 +396,20 @@ describe.runIf(LIVE)("subagents print-mode e2e (live LLM, opt-in)", () => {
   it(
     "BACKGROUND spawn + get_subagent_result — model backgrounds work then retrieves it",
     async () => {
-      run = await runPrintMode({
-        agentFiles: { worker: testAgentFile("worker"), Surveyor: testAgentFile("Surveyor", "read, ls") },
-        prompt:
-          "Spawn a worker subagent whose " +
-          "only task is to reply with the exact word BGPONG. After it finishes, use the " +
-          "get_subagent_result tool to fetch its result, then tell me exactly what it said.",
-        timeoutMs: LIVE_TIMEOUT,
-      });
+      run = await liveSmoke(
+        `Use the Agent tool with subagent_type '${LIVE_ECHO_TYPE}' to get the exact word BGPONG. ` +
+        `${DISPATCH_ARGS}${WAIT_FOR_NOTIFICATION}call get_subagent_result with only agent_id, then tell me exactly what it said.`,
+      );
       const calls = agentToolCalls(run.parentSession);
       expect(calls.length).toBeGreaterThan(0);
       expect(calls.every((c) => !Object.hasOwn(c, "run_in_background"))).toBe(true);
       expect(agentToolResults(run.parentSession).join("\n")).toMatch(/background/i);
       expect(invokedToolNames(run.parentSession)).toContain("get_subagent_result");
-      expect(settledAgent(run).result).toMatch(/BGPONG/i);
+      const record = settledAgent(run);
+      expect(record).toMatchObject({ type: LIVE_ECHO_TYPE, result: expect.stringMatching(/BGPONG/i) });
+      expect(toolResultsNamed(run.parentSession, "get_subagent_result")).toEqual(expect.arrayContaining([
+        expect.stringContaining(`\n\n${record.result?.trim()}`),
+      ]));
       expect(run.responseText).toMatch(/BGPONG/i);
     },
     LIVE_VITEST_TIMEOUT,
@@ -396,13 +418,10 @@ describe.runIf(LIVE)("subagents print-mode e2e (live LLM, opt-in)", () => {
   it(
     "Surveyor subagent_type — model dispatches a custom agent type",
     async () => {
-      run = await runPrintMode({
-        agentFiles: { worker: testAgentFile("worker"), Surveyor: testAgentFile("Surveyor", "read, ls") },
-        prompt:
-          "Use the Agent tool with subagent_type 'Surveyor' to look at the current working " +
-          "directory and report a one-line summary of what's there.",
-        timeoutMs: LIVE_TIMEOUT,
-      });
+      run = await liveSmoke(
+        "Use the Agent tool with subagent_type 'Surveyor' to look at the current working " +
+        `directory. ${DISPATCH_ARGS}${WAIT_FOR_NOTIFICATION}report a one-line summary of what's there.`,
+      );
       const calls = agentToolCalls(run.parentSession);
       // The custom type was actually selected (case-insensitive per README).
       expect(
@@ -419,22 +438,20 @@ describe.runIf(LIVE)("subagents print-mode e2e (live LLM, opt-in)", () => {
       // Agent-driven (not puppeted): one prompt, the model itself exercises three
       // Agent capabilities in a single session and self-reports. We then assert it
       // genuinely invoked each feature (not just that it claimed to in prose).
-      run = await runPrintMode({
-        agentFiles: { worker: testAgentFile("worker"), Surveyor: testAgentFile("Surveyor", "read, ls") },
-        prompt: [
-          "You are smoke-testing your own Agent toolset. Do these steps IN ORDER, then print a",
-          "final report with one PASS/FAIL line per step:",
-          "1) NOTIFY: spawn a worker subagent whose only",
-          "   task is to reply with the exact token NOTIFY_OK. Confirm it after the completion notification.",
-          "2) READ: spawn a worker subagent whose only",
-          "   task is to reply with the exact token BG_OK. After it finishes, call get_subagent_result",
-          "   to retrieve its output. Confirm you got BG_OK.",
-          "3) EXPLORE: spawn a subagent with subagent_type 'Surveyor' to summarize the current",
-          "   working directory in one line.",
-          "Finish with: 'SELF-SMOKE COMPLETE' followed by the PASS/FAIL lines.",
-        ].join("\n"),
-        timeoutMs: SELF_SMOKE_TIMEOUT,
-      });
+      run = await liveSmoke([
+        "You are smoke-testing your own Agent toolset. Do these steps IN ORDER, then print a",
+        "final report with one PASS/FAIL line per step:",
+        DISPATCH_ARGS.trim(),
+        "After each dispatch, end your current turn and continue on notification. Do not poll, sleep, or respawn.",
+        `1) NOTIFY: spawn a subagent with subagent_type '${LIVE_ECHO_TYPE}' whose only`,
+        "   task is to reply with the exact token NOTIFY_OK. Confirm it after the completion notification.",
+        `2) READ: spawn a subagent with subagent_type '${LIVE_ECHO_TYPE}' whose only`,
+        "   task is to reply with the exact token BG_OK. After it finishes, call get_subagent_result",
+        "   to retrieve its output. Confirm you got BG_OK.",
+        "3) EXPLORE: spawn a subagent with subagent_type 'Surveyor' to summarize the current",
+        "   working directory in one line.",
+        "Finish with: 'SELF-SMOKE COMPLETE' followed by the PASS/FAIL lines.",
+      ].join("\n"), SELF_SMOKE_TIMEOUT);
 
       const calls = agentToolCalls(run.parentSession);
       const tools = invokedToolNames(run.parentSession);

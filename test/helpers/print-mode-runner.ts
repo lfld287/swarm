@@ -13,13 +13,9 @@
  * real `runAgent` path — then waits for it to finish exactly like a production
  * print-mode host does.
  *
- * It is the pi-subagents analogue of pi-chonky-step's `src/agent.ts` headless
- * runner: same shape (DefaultResourceLoader → createAgentSession → prompt loop),
- * and crucially it replicates pi-chonky-step's SUBAGENT HOLD CONDITION — the
- * `dequeueFollowUpMessages` monkey-patch that blocks the parent agent loop until
- * background subagents complete (via the `Symbol.for("pi-subagents:manager")`
- * global the extension publishes). Without that patch, `session.prompt()`
- * resolves and the parent finishes before background children report back.
+ * The host holds the test open (via the published subagent manager) after
+ * `session.prompt()` returns, so a real completion notification can wake the
+ * idle parent and the resulting turn can finish before the test reads output.
  *
  * MODEL BACKEND (faux default, real opt-in)
  * -----------------------------------------
@@ -42,6 +38,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
   type AssistantMessage,
@@ -66,6 +63,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { NOTIFICATION_HOLD_MS } from "../../src/completion-outbox.js";
 import type { AgentRecord } from "../../src/types.js";
 import { fauxModelBackend } from "./faux-model-backend.js";
 import { getModel, registerFauxProvider } from "./pi-ai.js";
@@ -119,8 +117,7 @@ export interface RunPrintModeOptions {
   /** Faux mode: how many model calls to pad the queue for. Default 16. */
   maxModelCalls?: number;
   /**
-   * Honor the subagent hold condition — block the parent agent loop until
-   * background subagents finish (the pi-chonky-step monkey-patch). Default true.
+   * Keep the host open until children and notification-driven turns finish. Default true.
    */
   hold?: boolean;
   /**
@@ -410,31 +407,12 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
     | undefined;
   options.onParentSession?.(session, manager);
 
-  // --- subagent hold condition (the pi-chonky-step monkey-patch) ---
-  // Block the parent agent loop while background subagents are still running, so
-  // their completion nudges land before the parent's final turn.
-  const hold = options.hold ?? true;
-  if (hold && manager) {
-    // dequeueFollowUpMessages is internal — reach through with a cast.
-    const agent = (session as any).agent;
-    if (agent?.dequeueFollowUpMessages) {
-      const original = agent.dequeueFollowUpMessages.bind(agent);
-      agent.dequeueFollowUpMessages = function patched() {
-        const messages = original();
-        if (messages.length > 0) return messages;
-        if (manager.hasRunning()) {
-          // Returning a Promise is auto-unwrapped by the async loop config —
-          // the loop blocks here until all subagents finish and queue nudges.
-          return manager.waitForAll().then(() => original());
-        }
-        return messages;
-      };
-    }
-  }
-
-  // --- collect the parent's last assistant text ---
+  // Track runs as well as idle state: a fast notification turn can start and
+  // finish while we wait, and may itself spawn another child.
+  let parentRuns = 0;
   let responseText = "";
   const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+    if (event.type === "agent_start") parentRuns++;
     if (event.type === "message_start") responseText = "";
     if (
       event.type === "message_update" &&
@@ -495,16 +473,18 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
     await Promise.race([
       (async () => {
         await session.prompt(options.prompt);
-        // Fallback for when the hold patch is unavailable: catch any subagents
-        // still running after prompt() returns and process their results.
-        if (hold) {
-          while (!failed && manager?.hasRunning()) {
-            await manager.waitForAll();
-            // prompt() resolves (not rejects) on abort, so after a timeout this
-            // orphaned race arm keeps running — never re-prompt a torn-down session.
-            if (failed) break;
-            await session.prompt("Background agents have completed. Process their results.");
-          }
+        if (!(options.hold ?? true) || !manager) return;
+        while (!failed) {
+          await session.waitForIdle();
+          if (failed) return;
+          const runs = parentRuns;
+          await manager.waitForAll();
+          if (failed) return;
+          // Settled children can still have a completion in the idle outbox.
+          // Let it trigger the next turn itself. A synthetic prompt would race
+          // delivery and can ask the model to act before it has the result.
+          await delay(NOTIFICATION_HOLD_MS);
+          if (runs === parentRuns && session.isIdle && !manager.hasRunning()) return;
         }
       })(),
       timeout,
