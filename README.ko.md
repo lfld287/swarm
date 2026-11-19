@@ -196,5 +196,4 @@ MIT — [tintinweb](https://github.com/tintinweb)
 
 Full README (English): [README.md](README.md) · https://github.com/tintinweb/pi-subagents/blob/master/README.md
 
-<!-- Source SHA update pending: this translation includes uncommitted English README changes. -->
-<!-- source: README.md @ 399f50e -->
+<!-- source: README.md @ 26639d7 -->
