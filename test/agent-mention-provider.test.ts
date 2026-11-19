@@ -170,7 +170,7 @@ describe("agent suggestions", () => {
       for (const line of ["@e", "@ex", "@exp"]) await suggest(provider, line);
 
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn.mock.calls[0][0]).toContain("[orchestration]");
+      expect(warn.mock.calls[0][0]).toContain("[swarm]");
     } finally {
       warn.mockRestore();
     }

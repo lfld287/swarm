@@ -1,10 +1,10 @@
-# Contributing to orchestration
+# Contributing to swarm
 
 This guide exists to save both sides time.
 
 ## Philosophy
 
-`orchestration` is a [pi](https://pi.dev) extension, and it tries to stay focused:
+`swarm` is a [pi](https://pi.dev) extension, and it tries to stay focused:
 spawn and orchestrate autonomous sub-agents that feel native to pi, and do that
 well. Features that don't serve that goal, or that bolt on unrelated complexity,
 are likely to be declined. When in doubt, open an issue and discuss the idea
@@ -68,5 +68,5 @@ Other guidelines:
 
 ## Questions?
 
-Open an [issue](https://github.com/lfld287/orchestration/issues) — questions and
+Open an [issue](https://github.com/lfld287/swarm/issues) — questions and
 discussion are welcome.

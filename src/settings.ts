@@ -1,4 +1,4 @@
-// Persistence for orchestration operational settings.
+// Persistence for swarm operational settings.
 // - Global:  ~/.pi/agent/subagents.json (via getAgentDir()) — machine-wide defaults
 // - Project: <cwd>/.pi/subagents.json — per-project overrides; wins over global on load
 // /agents → Settings writes the scope the page is switched to (Tab). It opens
@@ -455,7 +455,7 @@ function readSettingsFile(path: string): SubagentsSettings {
     return sanitize(JSON.parse(readFileSync(path, "utf-8")));
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.warn(`[orchestration] Ignoring malformed settings at ${path}: ${reason}`);
+    console.warn(`[swarm] Ignoring malformed settings at ${path}: ${reason}`);
     return {};
   }
 }

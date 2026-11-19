@@ -22,7 +22,7 @@ The absolute URL is required alongside the relative link, because the relative l
 
 - Anything in a code span or code block, including comments inside code blocks.
 - Tool names (`Agent`, `get_subagent_result`, `steer_subagent`), slash commands, menu paths (`/agents → Settings → Widget`), setting keys, frontmatter fields, file paths, CLI flags, event and RPC channel names, keys and keybindings.
-- Product names: orchestration, pi, Claude Code, FleetView, npm, DeepSeek Harness, Git.
+- Product names: swarm, pi, Claude Code, FleetView, npm, DeepSeek Harness, Git.
 - `worktree`: it stays English, written as plain text, in all three languages.
 
 ## Glossary

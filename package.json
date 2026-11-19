@@ -1,16 +1,16 @@
 {
-  "name": "@lfld287/orchestration",
+  "name": "@lfld287/swarm",
   "version": "0.26.1",
   "description": "Claude Code-like subagent orchestration for the pi coding agent — parallel execution, live widget, fleet view, custom agent types, mid-run steering, Claude Code compatibility, look and feel.",
   "author": "tintinweb",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lfld287/orchestration.git"
+    "url": "https://github.com/lfld287/swarm.git"
   },
-  "homepage": "https://github.com/lfld287/orchestration#readme",
+  "homepage": "https://github.com/lfld287/swarm#readme",
   "bugs": {
-    "url": "https://github.com/lfld287/orchestration/issues"
+    "url": "https://github.com/lfld287/swarm/issues"
   },
   "publishConfig": {
     "access": "public"
@@ -64,7 +64,7 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "video": "https://github.com/lfld287/orchestration/raw/main/media/demo.mp4",
-    "image": "https://github.com/lfld287/orchestration/raw/main/media/screenshot.png"
+    "video": "https://github.com/lfld287/swarm/raw/main/media/demo.mp4",
+    "image": "https://github.com/lfld287/swarm/raw/main/media/screenshot.png"
   }
 }

@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **⚠️ Breaking: Cross-extension RPC v2 → v3.** Check the version and capabilities on `ping`, and drop `isBackground`. A successful spawn only acknowledges acceptance; listen for terminal events or query the accepted ID for startup errors.
 
-> **⚠️ Breaking: Fork package and extension renamed.** The package is now `@lfld287/orchestration`; install it with `pi install git:github.com/lfld287/orchestration`. The extension short name and log prefix changed from `pi-subagents` to `orchestration`; replace the old short name with `orchestration` in any pi configuration entries that refer to this extension. The npm package `@tintinweb/pi-subagents` still points to upstream and is unaffected.
+> **⚠️ Breaking: Fork package and extension renamed.** The package is now `@lfld287/swarm`; install it with `pi install git:github.com/lfld287/swarm`. The extension short name and log prefix changed from `pi-subagents` to `swarm`; replace the old short name with `swarm` in any pi configuration entries that refer to this extension. The npm package `@tintinweb/pi-subagents` still points to upstream and is unaffected.
 
 > **⭐ New — set the prompt cache retention for subagents** ([#464](https://github.com/tintinweb/pi-subagents/pull/464)). Let short-lived subagents skip the main session's long cache tier: set `cacheRetention`, or `cache_retention:` per agent.
 

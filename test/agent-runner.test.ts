@@ -1887,7 +1887,7 @@ describe("extensionCanonicalNames (#143 — package short name alias)", () => {
 
   it("matches this extension by its package short name", () => {
     const entry = fileURLToPath(new URL("../src/index.ts", import.meta.url));
-    expect(extensionCanonicalNames(entry)).toEqual(["src", "orchestration"]);
+    expect(extensionCanonicalNames(entry)).toEqual(["src", "swarm"]);
   });
 
   it("aliases a directory-style entry to the package name even though pi registers dist/index.js", () => {

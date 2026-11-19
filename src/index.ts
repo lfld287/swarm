@@ -607,7 +607,7 @@ export default function (pi: ExtensionAPI) {
   // RPC handlers + the `subagents:ready` broadcast are wired on `session_start`
   // (a bound lifecycle event), not at factory time. pi runs every extension
   // factory before the `extensions:` filter and only fires lifecycle events for
-  // survivors, so a child session that filtered orchestration out never reaches
+  // survivors, so a child session that filtered swarm out never reaches
   // session_start — and must not advertise or answer RPC it can't service
   // (currentCtx would stay undefined → spawn always "No active session"). Gating
   // here makes a filtered session behave like an absent one (#142).
@@ -632,7 +632,7 @@ export default function (pi: ExtensionAPI) {
     } catch (err) {
       // Scheduling is non-essential — log and move on so the rest of the
       // extension keeps working if e.g. .pi/ is unwritable.
-      console.warn("[orchestration] Failed to start scheduler:", err);
+      console.warn("[swarm] Failed to start scheduler:", err);
     }
   }
 
@@ -1329,7 +1329,7 @@ Terse command-style prompts produce shallow, generic work.
     // Replacement callback (not a string) — agent descriptions may contain `$&` etc.
     return template.replace(/\{\{(\w+)\}\}/g, (raw, name: string) => {
       if (vars[name]) return vars[name]();
-      console.warn(`[orchestration] agent-tool-description.md: unknown placeholder ${raw} left as-is`);
+      console.warn(`[swarm] agent-tool-description.md: unknown placeholder ${raw} left as-is`);
       return raw;
     });
   };
@@ -1343,9 +1343,9 @@ Terse command-style prompts produce shallow, generic work.
         if (!existsSync(path)) continue;
         const text = readFileSync(path, "utf-8").trim();
         if (text) return renderToolDescriptionTemplate(text);
-        console.warn(`[orchestration] ${path} is empty — ignoring`);
+        console.warn(`[swarm] ${path} is empty — ignoring`);
       } catch (err) {
-        console.warn(`[orchestration] failed to read ${path}: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(`[swarm] failed to read ${path}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return undefined;
@@ -1357,7 +1357,7 @@ Terse command-style prompts produce shallow, generic work.
     if (mode === "custom") {
       const custom = loadCustomToolDescription();
       if (custom) return custom;
-      console.warn('[orchestration] toolDescriptionMode is "custom" but no agent-tool-description.md found — using "full"');
+      console.warn('[swarm] toolDescriptionMode is "custom" but no agent-tool-description.md found — using "full"');
     }
     return fullAgentToolDescription;
   })();
