@@ -1,6 +1,6 @@
-# @tintinweb/pi-subagents
+# orchestration
 
-<!-- full-readme: README.md · https://github.com/tintinweb/pi-subagents/blob/master/README.md -->
+<!-- full-readme: README.md · https://github.com/lfld287/orchestration/blob/main/README.md -->
 
 <p align="center">
   <a href="README.md">English</a> ·
@@ -11,26 +11,23 @@
 
 > 本文是英文 README 的部分翻译（机器翻译，欢迎指正），仅包含简介、功能、安装、快速开始、`/agents` 命令和命令行示例。UI、自定义代理、工具参数、设置与默认值、事件、RPC 等其余内容仅提供英文版：[完整英文 README](README.md)。
 >
-> *Partial translation of the English README. Full reference: [README.md](README.md) · https://github.com/tintinweb/pi-subagents/blob/master/README.md*
+> *Partial translation of the English README. Full reference: [README.md](README.md) · https://github.com/lfld287/orchestration/blob/main/README.md*
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/tintinweb/pi-subagents/raw/master/media/logo-dark.svg">
-    <img src="https://github.com/tintinweb/pi-subagents/raw/master/media/logo-light.svg" alt="@tintinweb/pi-subagents" width="520">
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/lfld287/orchestration/raw/main/media/logo-dark.svg">
+    <img src="https://github.com/lfld287/orchestration/raw/main/media/logo-light.svg" alt="orchestration" width="520">
   </picture>
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@tintinweb/pi-subagents"><img src="https://img.shields.io/npm/v/@tintinweb/pi-subagents?color=cb3837&logo=npm" alt="npm 版本"></a>
-  <a href="https://www.npmjs.com/package/@tintinweb/pi-subagents"><img src="https://img.shields.io/npm/dm/@tintinweb/pi-subagents" alt="npm 下载量"></a>
-  <a href="https://github.com/tintinweb/pi-subagents/actions/workflows/ci.yml"><img src="https://github.com/tintinweb/pi-subagents/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/tintinweb/pi-subagents/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@tintinweb/pi-subagents" alt="许可证：MIT"></a>
+  <a href="https://github.com/lfld287/orchestration/actions/workflows/ci.yml"><img src="https://github.com/lfld287/orchestration/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/lfld287/orchestration/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lfld287/orchestration" alt="许可证：MIT"></a>
 </p>
 <p align="center">
   <a href="https://pi.dev"><img src="https://img.shields.io/badge/pi-%E2%89%A5%201.1.0-6f42c1" alt="需要 pi >= 1.1.0"></a>
-  <a href="https://pi.dev/packages/@tintinweb/pi-subagents"><img src="https://img.shields.io/badge/pi.dev-package-5b5bd6" alt="pi.dev 包"></a>
   <img src="https://img.shields.io/badge/Claude%20Code-style%20subagents-d97757" alt="为 pi 提供 Claude Code 风格的子代理。">
-  <a href="https://github.com/tintinweb/pi-subagents/commits/master"><img src="https://img.shields.io/github/last-commit/tintinweb/pi-subagents" alt="最近提交"></a>
+  <a href="https://github.com/lfld287/orchestration/commits/main"><img src="https://img.shields.io/github/last-commit/lfld287/orchestration/main" alt="最近提交"></a>
 </p>
 
 <h3 align="center">为 pi 提供 Claude Code 风格的子代理。</h3>
@@ -42,13 +39,13 @@
   <a href="README.md#custom-agents"><b>自定义代理 (EN)</b></a> ·
   <a href="README.md#tools"><b>工具 (EN)</b></a> ·
   <a href="README.md#persistent-settings"><b>设置 (EN)</b></a> ·
-  <a href="https://github.com/tintinweb/pi-subagents/blob/master/CHANGELOG.md"><b>更新日志 (EN)</b></a>
+  <a href="https://github.com/lfld287/orchestration/blob/main/CHANGELOG.md"><b>更新日志 (EN)</b></a>
 </p>
 
-<p align="center"><code>pi install npm:@tintinweb/pi-subagents</code></p>
+<p align="center"><code>pi install git:github.com/lfld287/orchestration</code></p>
 这是一个为 [pi](https://pi.dev) 提供 **Claude Code 风格子代理**的扩展。先在 `.pi/agents/<name>.md` 定义角色，再用 `Agent` 启动（见[快速开始](#快速开始)）。扩展不附带任何角色。每个代理都在独立的后台会话中运行，有自己的工具、系统提示词、模型和思考级别。你可以在运行中引导代理，也可以在完成后恢复会话。
 
-<img width="600" alt="pi-subagents 截图" src="https://github.com/tintinweb/pi-subagents/raw/master/media/screenshot.png" />
+<img width="600" alt="orchestration 截图" src="https://github.com/lfld287/orchestration/raw/main/media/screenshot.png" />
 
 
 https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
@@ -64,7 +61,7 @@ https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
 - **FleetView**：在编辑器下方显示的 Claude Code 风格的可导航列表，包含 `main` 和所有正在运行的子代理（最早启动的排在最前）。在空提示符下按 `↓`（或 `←`）进入，`↑`/`↓` 移动选择，`Enter` 打开所选代理的实时自动更新对话，`Esc` 返回。已完成的代理会短暂保留后再移出列表；查看器在代理完成后仍保持打开，方便你阅读最终输出。通过 `/agents → Settings → Fleet view` 开关
 - **对话查看器**：在 `/agents` 中选择任意代理，即可打开实时滚动的浮层，显示其完整对话（自动跟随新内容，向上滚动即暂停）。在 pi 的全屏模式下，它是一个无边框、占满整个终端、支持鼠标的查看器。按 `Enter` 打开输入框，输入内容后再按 `Enter` 发送，即可内联引导正在运行的代理（`Esc` 或提交空内容则返回）。这条消息会作为用户消息显示，并在代理当前的工具调用结束后调整其工作方向。按 `x`（再按一次 `x` 确认）可停止仍在运行的代理。工具调用的显示方式与 pi 自身的对话记录一致，使用代理会话中注册的渲染器：bash 调用显示命令和输出，`read` 显示行号，`edit` 显示 diff，扩展工具使用自己的渲染器，没有渲染器的工具则回退为显示参数和截断后的输出预览。`ctrl+o`（或 `app.tools.expand` 绑定的任意按键）可展开被折叠的工具输出。助手文本以 Markdown 渲染；按 `m` 可在关闭、仅助手、全部三种模式之间循环切换（参见 [Viewer markdown](README.md#persistent-settings)）
 - **自定义代理类型**：在 `.pi/agents/<name>.md` 或 `.agents/agents/<name>.md`（项目级）或全局位置定义代理，使用 YAML frontmatter：自定义系统提示词、模型选择、思考级别、工具限制，以及兼容 Claude Code 的彩色名称徽标
-- **随包分发的代理**：pi 包可以在其 `package.json` 中用 `"pi": { "subagents": { "agents": ["./agents"] } }` 声明自己的 `.md` 代理，这样只需 `pi install` 即可完成全部配置：无需在每台机器或每次容器启动时把文件复制到 `.pi/agents/`。只读取 pi 实际安装的包（绝不读取 `node_modules`），包中定义的代理优先级低于你自己编写的所有代理，`/agents` 以只读方式显示它们，并提供 Eject 和 Disable。用 `packageAgents` 缩小范围或关闭此功能。**[完整指南](https://github.com/tintinweb/pi-subagents/blob/master/docs/packages.md)**
+- **随包分发的代理**：pi 包可以在其 `package.json` 中用 `"pi": { "subagents": { "agents": ["./agents"] } }` 声明自己的 `.md` 代理，这样只需 `pi install` 即可完成全部配置：无需在每台机器或每次容器启动时把文件复制到 `.pi/agents/`。只读取 pi 实际安装的包（绝不读取 `node_modules`），包中定义的代理优先级低于你自己编写的所有代理，`/agents` 以只读方式显示它们，并提供 Eject 和 Disable。用 `packageAgents` 缩小范围或关闭此功能。**[完整指南](https://github.com/lfld287/orchestration/blob/main/docs/packages.md)**
 - **代理提及**：子代理是一等公民：在提示符中输入 `@reviewer also check the RPC path`，这段话会发给该代理而不是主模型，且不会有任何内容进入聊天。同一种语法覆盖整个生命周期：在它运行时给它发消息，在它完成后恢复它，很久以后再从磁盘重新打开它的会话，或者在它从未运行过时启动它。提及一个未在运行的代理时，会通过一个不在界面上显示的克隆对话来启动它，因此它能获得 Claude Code 那种根据上下文编写的提示词和一次真正的 `Agent` 工具调用，同样不会有任何内容进入聊天；`direct` 模式则直接用你的文本启动它，完全不调用模型。编排者可以给代理设置 `name`，这样你就能用 `@auth-audit` 指代它，`steer_subagent`/`get_subagent_result` 也接受这类名称。`@` 会与 pi 的文件补全一起补全正在运行的代理、可恢复的代理和可启动的类型；`@main` 强制把文本发回主模型。通过 `/agents → Settings → Agent mentions` 开关
 - **运行中引导**：向正在运行的代理注入消息，无需重启即可改变其工作方向
 - **会话恢复**：从代理停下的地方继续，保留对话上下文。受理时返回同一个代理 ID，完成时与新启动的代理一样发送通知
@@ -78,14 +75,14 @@ https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
 - **工具黑名单**：通过 `disallowed_tools` frontmatter 屏蔽特定工具
 - **带样式的完成通知**：后台代理的结果渲染为带主题的紧凑通知框（图标、统计、结果预览），而不是原始 XML。可展开显示完整输出。成组完成时，每个代理分别渲染
 - **事件总线**：通过 `pi.events` 发出生命周期事件（`subagents:created`、`started`、`completed`、`failed`、`steered`、`compacted`）和逐条消息的开销明细（`subagents:usage`），让其他扩展能够响应子代理的活动
-- **跨扩展 RPC**：其他 pi 扩展可通过 `pi.events` (`subagents:rpc:ping`, `subagents:rpc:spawn`, `subagents:rpc:stop`, `subagents:rpc:consume`, `subagents:rpc:steer`, `subagents:rpc:get`, `subagents:rpc:list`) 启动、停止、引导和查询子代理。RPC v3 使用标准化响应和能力探测。会话开始时发出 `subagents:ready`。 **[完整参考](https://github.com/tintinweb/pi-subagents/blob/master/docs/rpc.md)**
+- **跨扩展 RPC**：其他 pi 扩展可通过 `pi.events` (`subagents:rpc:ping`, `subagents:rpc:spawn`, `subagents:rpc:stop`, `subagents:rpc:consume`, `subagents:rpc:steer`, `subagents:rpc:get`, `subagents:rpc:list`) 启动、停止、引导和查询子代理。RPC v3 使用标准化响应和能力探测。会话开始时发出 `subagents:ready`。 **[完整参考](https://github.com/lfld287/orchestration/blob/main/docs/rpc.md)**
 - **定时子代理**：向 `Agent` 工具传入 `schedule`，按 cron、固定间隔或一次性时间触发。任务作用域为会话，持久化存储使用 PID 锁；结果以与手动启动的后台代理相同的完成通知送达；通过 `/agents → Scheduled jobs` 管理
 - **模型范围约束**：需主动开启的校验，确保子代理选用的模型在你的 pi `enabledModels` 允许列表之内（来源为 `/scoped-models`，全局和项目本地的 pi 设置都会生效）。调用方指定了范围外的模型时，直接向编排者返回错误；frontmatter 固定了范围外的模型时，发出警告但照常运行（以 frontmatter 为准）。通过 `/agents → Settings → Scope models` 开关
 
 ## 安装
 
 ```bash
-pi install npm:@tintinweb/pi-subagents
+pi install git:github.com/lfld287/orchestration
 ```
 
 或在开发时直接加载：
@@ -193,6 +190,7 @@ pi -p "Use the reviewer agent to find files that handle authentication"
 
 MIT — [tintinweb](https://github.com/tintinweb)
 
-Full README (English): [README.md](README.md) · https://github.com/tintinweb/pi-subagents/blob/master/README.md
+Full README (English): [README.md](README.md) · https://github.com/lfld287/orchestration/blob/main/README.md
 
+<!-- Sync pending: the English README changes are not yet committed. -->
 <!-- source: README.md @ 26639d7 -->

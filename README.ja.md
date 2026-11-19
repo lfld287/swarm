@@ -1,6 +1,6 @@
-# @tintinweb/pi-subagents
+# orchestration
 
-<!-- full-readme: README.md · https://github.com/tintinweb/pi-subagents/blob/master/README.md -->
+<!-- full-readme: README.md · https://github.com/lfld287/orchestration/blob/main/README.md -->
 
 <p align="center">
   <a href="README.md">English</a> ·
@@ -11,26 +11,23 @@
 
 > これは英語版 README の一部を翻訳したものです（機械翻訳のため、誤りのご指摘を歓迎します）。概要、機能、インストール、クイックスタート、`/agents` コマンド、コマンドラインの例のみを収録しています。UI、カスタムエージェント、ツールのパラメーター、設定とデフォルト値、イベント、RPC などその他の内容は英語版でのみ提供しています。全文は [英語版 README（完全版）](README.md) を参照してください。
 >
-> *Partial translation of the English README. Full reference: [README.md](README.md) · https://github.com/tintinweb/pi-subagents/blob/master/README.md*
+> *Partial translation of the English README. Full reference: [README.md](README.md) · https://github.com/lfld287/orchestration/blob/main/README.md*
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/tintinweb/pi-subagents/raw/master/media/logo-dark.svg">
-    <img src="https://github.com/tintinweb/pi-subagents/raw/master/media/logo-light.svg" alt="@tintinweb/pi-subagents" width="520">
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/lfld287/orchestration/raw/main/media/logo-dark.svg">
+    <img src="https://github.com/lfld287/orchestration/raw/main/media/logo-light.svg" alt="orchestration" width="520">
   </picture>
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@tintinweb/pi-subagents"><img src="https://img.shields.io/npm/v/@tintinweb/pi-subagents?color=cb3837&logo=npm" alt="npm バージョン"></a>
-  <a href="https://www.npmjs.com/package/@tintinweb/pi-subagents"><img src="https://img.shields.io/npm/dm/@tintinweb/pi-subagents" alt="npm ダウンロード数"></a>
-  <a href="https://github.com/tintinweb/pi-subagents/actions/workflows/ci.yml"><img src="https://github.com/tintinweb/pi-subagents/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/tintinweb/pi-subagents/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@tintinweb/pi-subagents" alt="ライセンス: MIT"></a>
+  <a href="https://github.com/lfld287/orchestration/actions/workflows/ci.yml"><img src="https://github.com/lfld287/orchestration/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/lfld287/orchestration/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lfld287/orchestration" alt="ライセンス: MIT"></a>
 </p>
 <p align="center">
   <a href="https://pi.dev"><img src="https://img.shields.io/badge/pi-%E2%89%A5%201.1.0-6f42c1" alt="pi >= 1.1.0 が必要"></a>
-  <a href="https://pi.dev/packages/@tintinweb/pi-subagents"><img src="https://img.shields.io/badge/pi.dev-package-5b5bd6" alt="pi.dev パッケージ"></a>
   <img src="https://img.shields.io/badge/Claude%20Code-style%20subagents-d97757" alt="pi のための Claude Code スタイルのサブエージェント。">
-  <a href="https://github.com/tintinweb/pi-subagents/commits/master"><img src="https://img.shields.io/github/last-commit/tintinweb/pi-subagents" alt="最終コミット"></a>
+  <a href="https://github.com/lfld287/orchestration/commits/main"><img src="https://img.shields.io/github/last-commit/lfld287/orchestration/main" alt="最終コミット"></a>
 </p>
 
 <h3 align="center">pi のための Claude Code スタイルのサブエージェント。</h3>
@@ -42,14 +39,14 @@
   <a href="README.md#custom-agents"><b>カスタムエージェント (EN)</b></a> ·
   <a href="README.md#tools"><b>ツール (EN)</b></a> ·
   <a href="README.md#persistent-settings"><b>設定 (EN)</b></a> ·
-  <a href="https://github.com/tintinweb/pi-subagents/blob/master/CHANGELOG.md"><b>変更履歴 (EN)</b></a>
+  <a href="https://github.com/lfld287/orchestration/blob/main/CHANGELOG.md"><b>変更履歴 (EN)</b></a>
 </p>
 
-<p align="center"><code>pi install npm:@tintinweb/pi-subagents</code></p>
+<p align="center"><code>pi install git:github.com/lfld287/orchestration</code></p>
 
 [pi](https://pi.dev) に **Claude Code スタイルのサブエージェント**を追加する拡張機能です。`.pi/agents/<name>.md` にロールを定義してから、`Agent` で起動します（[クイックスタート](#クイックスタート)を参照）。同梱ロールはありません。各エージェントは独自のツール、システムプロンプト、モデル、思考レベルを持ち、別々のバックグラウンドセッションで動きます。実行中に指示を送って軌道修正したり、完了後にセッションを再開したりできます。
 
-<img width="600" alt="pi-subagents のスクリーンショット" src="https://github.com/tintinweb/pi-subagents/raw/master/media/screenshot.png" />
+<img width="600" alt="orchestration のスクリーンショット" src="https://github.com/lfld287/orchestration/raw/main/media/screenshot.png" />
 
 
 https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
@@ -65,7 +62,7 @@ https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
 - **FleetView**：エディターの下に表示される、Claude Code スタイルの操作可能なリストで、`main` と実行中のすべてのサブエージェントが並びます（起動が早い順）。空のプロンプトで `↓`（または `←`）を押すとリストにフォーカスが移り、`↑`/`↓` で選択を移動、`Enter` で選択したエージェントの会話を開き（リアルタイムで自動更新されます）、`Esc` で戻ります。完了したエージェントは少しの間残ってから消えます。ビューアーは完了後も開いたままなので、最終出力を読めます。`/agents → Settings → Fleet view` で切り替えます
 - **会話ビューアー**：`/agents` で任意のエージェントを選ぶと、その会話全体をリアルタイムでスクロール表示するオーバーレイが開きます（新しい内容に自動で追従し、上にスクロールすると一時停止）。pi のフルスクリーンモードでは、枠なしで端末全体を使う、マウス対応の観察画面になります。`Enter` で入力欄を開き、入力して `Enter` で送信すると、実行中のエージェントをその場でステアリングできます（`Esc` または空のまま送信で戻ります）。メッセージはユーザーメッセージとして表示され、エージェントは現在のツール呼び出しを終えた後、その指示に沿って方向を変えます。まだ実行中のエージェントは `x` を押す（確認のためもう一度 `x`）と停止できます。ツール呼び出しは、エージェントのセッションに登録されたレンダラーを通じて、pi 自身のトランスクリプトと同じように表示されます：bash 呼び出しはコマンドと出力、`read` は行番号、`edit` は差分、拡張機能のツールは独自のレンダラーで表示され、レンダラーのないツールは引数と長さ制限付きの出力プレビューにフォールバックします。`ctrl+o`（または `app.tools.expand` に割り当てたキー）で省略されたツール出力を展開します。アシスタントのテキストは Markdown として描画され、`m` で「オフ」「アシスタントのみ」「すべて」の 3 つを切り替えます（[Viewer markdown](README.md#persistent-settings) を参照）
 - **カスタムエージェントタイプ**：`.pi/agents/<name>.md` または `.agents/agents/<name>.md`（プロジェクト）、あるいはグローバルにエージェントを定義します。YAML frontmatter で、システムプロンプト、モデル選択、思考レベル、ツール制限、Claude Code 互換の色付き名前バッジを指定できます
-- **パッケージ同梱のエージェント**：pi パッケージは `package.json` に `"pi": { "subagents": { "agents": ["./agents"] } }` と書くことで、独自の `.md` エージェントを宣言できます。`pi install` だけでセットアップが完了し、マシンごとやコンテナ起動のたびに `.pi/agents/` へファイルをコピーする必要はありません。読み込むのは pi が実際にインストールしたパッケージだけで（`node_modules` は決して読みません）、パッケージの定義はユーザーが定義したどのエージェントよりも優先度が低く、`/agents` では読み取り専用で表示され、Eject と Disable が使えます。`packageAgents` で対象を絞り込んだり、無効にしたりできます。**[詳細ガイド](https://github.com/tintinweb/pi-subagents/blob/master/docs/packages.md)**
+- **パッケージ同梱のエージェント**：pi パッケージは `package.json` に `"pi": { "subagents": { "agents": ["./agents"] } }` と書くことで、独自の `.md` エージェントを宣言できます。`pi install` だけでセットアップが完了し、マシンごとやコンテナ起動のたびに `.pi/agents/` へファイルをコピーする必要はありません。読み込むのは pi が実際にインストールしたパッケージだけで（`node_modules` は決して読みません）、パッケージの定義はユーザーが定義したどのエージェントよりも優先度が低く、`/agents` では読み取り専用で表示され、Eject と Disable が使えます。`packageAgents` で対象を絞り込んだり、無効にしたりできます。**[詳細ガイド](https://github.com/lfld287/orchestration/blob/main/docs/packages.md)**
 - **エージェントメンション**：サブエージェントはファーストクラスの存在です。プロンプトで `@reviewer also check the RPC path` と入力すると、その内容はメインモデルではなくそのエージェントに届き、メインの会話には一切残りません。1 つの構文でライフサイクル全体を扱えます：実行中のエージェントにメッセージを送る、完了したエージェントを再開する、ずっと後になってからディスク上のセッションを開き直す、一度も実行されていなければ起動する。実行中でないエージェントをメンションすると、画面外で複製した会話を通じて起動されるため、Claude Code と同じように文脈を踏まえて書かれたプロンプトと本物の `Agent` ツール呼び出しが得られ、やはりメインの会話には一切残りません。`direct` モードでは、モデルを一切呼ばずに、入力したテキストからその場で起動します。オーケストレーターがエージェントに `name` を付ければ `@auth-audit` のように呼びかけられ、その名前は `steer_subagent`/`get_subagent_result` でも使えます。`@` を入力すると、pi のファイル補完に加えて、実行中のエージェント、再開可能なエージェント、起動可能なタイプが補完候補に表示されます。`@main` を付けると、テキストを強制的にメインモデルへ戻します。`/agents → Settings → Agent mentions` で切り替えます
 - **実行中のステアリング**：実行中のエージェントにメッセージを差し込み、再起動せずに作業の方向を変えます
 - **セッションの再開**：会話のコンテキストを保ったまま、エージェントが止まったところから続けます。受理時には同じエージェント ID が返り、完了時には新規起動と同じように通知します
@@ -79,14 +76,14 @@ https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
 - **ツールの拒否リスト**：`disallowed_tools` frontmatter で特定のツールをブロックします
 - **スタイル付きの完了通知**：バックグラウンドエージェントの結果は、生の XML ではなく、テーマに沿ったコンパクトな通知ボックス（アイコン、統計、結果のプレビュー）として描画されます。展開すると完全な出力を表示します。まとめて完了した場合も、エージェントごとに個別に描画されます
 - **イベントバス**：ライフサイクルイベント（`subagents:created`、`started`、`completed`、`failed`、`steered`、`compacted`）とメッセージごとの消費記録（`subagents:usage`）を `pi.events` 経由で発行し、他の拡張機能がサブエージェントの動きに反応できるようにします
-- **拡張機能間 RPC**：他の pi 拡張機能は `pi.events` (`subagents:rpc:ping`, `subagents:rpc:spawn`, `subagents:rpc:stop`, `subagents:rpc:consume`, `subagents:rpc:steer`, `subagents:rpc:get`, `subagents:rpc:list`) 経由で、サブエージェントを起動、停止、ステアリングし、状態を確認できます。RPC v3 は標準化された応答エンベロープと機能検出を備えています。セッション開始時に `subagents:ready` を発行します。 **[詳細リファレンス](https://github.com/tintinweb/pi-subagents/blob/master/docs/rpc.md)**
+- **拡張機能間 RPC**：他の pi 拡張機能は `pi.events` (`subagents:rpc:ping`, `subagents:rpc:spawn`, `subagents:rpc:stop`, `subagents:rpc:consume`, `subagents:rpc:steer`, `subagents:rpc:get`, `subagents:rpc:list`) 経由で、サブエージェントを起動、停止、ステアリングし、状態を確認できます。RPC v3 は標準化された応答エンベロープと機能検出を備えています。セッション開始時に `subagents:ready` を発行します。 **[詳細リファレンス](https://github.com/lfld287/orchestration/blob/main/docs/rpc.md)**
 - **サブエージェントのスケジュール実行**：`Agent` ツールに `schedule` を渡すと、cron、一定間隔、または 1 回限りで起動します。ジョブはセッション単位で、PID ロック付きで永続化されます。結果は手動で起動したバックグラウンドエージェントと同じ完了通知として届きます。`/agents → Scheduled jobs` で管理します
 - **モデル範囲の強制**：明示的に有効化して使う検証機能で、サブエージェントが選ぶモデルが pi の `enabledModels` 許可リストの範囲内に収まるようにします（`/scoped-models` から取得し、グローバルとプロジェクトローカルの pi 設定の両方を反映）。呼び出し側が範囲外のモデルを指定した場合はオーケストレーターにハードエラーを返し、frontmatter で範囲外のモデルが固定されている場合は警告を出したうえでそのまま実行します（frontmatter を優先）。`/agents → Settings → Scope models` で切り替えます
 
 ## インストール
 
 ```bash
-pi install npm:@tintinweb/pi-subagents
+pi install git:github.com/lfld287/orchestration
 ```
 
 開発時には直接読み込むこともできます：
@@ -194,6 +191,7 @@ pi -p "Use the reviewer agent to find files that handle authentication"
 
 MIT — [tintinweb](https://github.com/tintinweb)
 
-Full README (English): [README.md](README.md) · https://github.com/tintinweb/pi-subagents/blob/master/README.md
+Full README (English): [README.md](README.md) · https://github.com/lfld287/orchestration/blob/main/README.md
 
+<!-- Sync pending: the English README changes are not yet committed. -->
 <!-- source: README.md @ 26639d7 -->

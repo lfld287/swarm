@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -1882,6 +1883,11 @@ describe("extensionCanonicalNames (#143 — package short name alias)", () => {
     // Without this, `pi.extensions: ["./src/index.ts"]` only ever matches as "src".
     const dir = pkgDir("@tintinweb/Pi-Subagents", ["./src/index.ts"]);
     expect(extensionCanonicalNames(join(dir, "src", "index.ts"))).toEqual(["src", "pi-subagents"]);
+  });
+
+  it("matches this extension by its package short name", () => {
+    const entry = fileURLToPath(new URL("../src/index.ts", import.meta.url));
+    expect(extensionCanonicalNames(entry)).toEqual(["src", "orchestration"]);
   });
 
   it("aliases a directory-style entry to the package name even though pi registers dist/index.js", () => {

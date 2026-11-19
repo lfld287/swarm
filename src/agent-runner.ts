@@ -66,7 +66,7 @@ export function extensionCanonicalName(extPath: string): string {
 }
 
 /**
- * The unscoped, lowercased npm short name of the pi package that DECLARES
+ * The unscoped, lowercased package name of the pi package that DECLARES
  * `extPath` as an extension entry — or undefined if the entry doesn't belong to
  * such a package.
  *
@@ -82,8 +82,8 @@ export function extensionCanonicalName(extPath: string): string {
  * this entry, either as the file itself or as a directory containing it (pi
  * expands `"./dist"` to `dist/index.js`). That "declares this entry" check is
  * deliberate: our own test fixtures live under this repo, whose root manifest
- * declares `./src/index.ts` as `@tintinweb/pi-subagents`, so a looser rule would
- * misattribute every co-located file to `pi-subagents`.
+ * declares `./src/index.ts` as `@lfld287/orchestration`, so a looser rule would
+ * misattribute every co-located file to `orchestration`.
  */
 function extensionPackageName(extPath: string): string | undefined {
   // `builtin:<name>` names no file; climbing from it would read the process cwd's manifest.

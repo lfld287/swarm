@@ -174,7 +174,7 @@ A declared `.md` agent is strictly less privileged than what the same package al
 1. `pi list` — is the package in pi's settings at all? Discovery reads that array, not `node_modules`, and not a `pi -e` source: a `--extension` install is resolved for that one run and never written to `packages[]`, so its agents stay invisible even though its extensions and skills load.
 2. Does `package.json` carry `pi.subagents` (or `pi-subagents`)? A `pi` key that declares only `extensions` contributes no agents; the conventional `agents/` directory is not scanned.
 3. Is the file `*.md` directly inside a declared directory? The scan is not recursive.
-4. Does the frontmatter parse, and are you using the right type (`name:` or, if omitted, the filename)? A broken file is skipped with a `[pi-subagents] Skipping agent file …` warning on stderr.
+4. Does the frontmatter parse, and are you using the right type (`name:` or, if omitted, the filename)? A broken file is skipped with a `[orchestration] Skipping agent file …` warning on stderr.
 5. Is `packageAgents` set to `false` or to a list that does not include it? Check `/agents → Settings → Package agents`.
 6. Is the package configured only in an untrusted project's `.pi/settings.json`? Trust the project, or install it globally.
 

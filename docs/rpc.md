@@ -6,6 +6,8 @@ The bus is **in-process**. `pi.events.emit` dispatches listeners synchronously, 
 
 For the channel list, the reply envelope, the per-channel snippets and the event table, see [`README.md`](../README.md#cross-extension-rpc). This document is the reference README does not have room for: the complete spawn-option surface, every error string, the notification race, the registry, and what protocol version `3` does and does not promise.
 
+Install orchestration with `pi install git:github.com/lfld287/orchestration`.
+
 ## The surface at a glance
 
 Everything goes through `pi.events`. The lifecycle events push one agent shape, `SubagentInfo` (`toSubagentInfo` in `src/subagent-info.ts`). `get` and `list` return the same shape on request. `spawn`, `steer`, `consume` and `stop` act on an agent. Every request gets its answer on its own `:reply:<requestId>` channel.
@@ -16,7 +18,7 @@ flowchart LR
     L["listener"]
     C["caller"]
   end
-  subgraph ext["pi-subagents"]
+  subgraph ext["orchestration"]
     R["cross-extension-rpc.ts<br/>handlers"]
     M["AgentManager<br/>agent records"]
     I["toSubagentInfo()"]
@@ -163,7 +165,7 @@ Stop, steer and get take a manager record ID. Consume also accepts a handle (the
 
 ## The notification race
 
-When a background agent finishes, pi-subagents sends the user a completion notification. If you have already shown the model that result yourself, that notification arrives on top of an answer that was already given, and it costs the parent a turn to dismiss. `subagents:rpc:consume` is how you say you have handled it — the bus-side half of what `get_subagent_result` does when it returns a result.
+When a background agent finishes, orchestration sends the user a completion notification. If you have already shown the model that result yourself, that notification arrives on top of an answer that was already given, and it costs the parent a turn to dismiss. `subagents:rpc:consume` is how you say you have handled it — the bus-side half of what `get_subagent_result` does when it returns a result.
 
 **When you send it decides whether it works.** The timeline:
 
@@ -174,7 +176,7 @@ When a background agent finishes, pi-subagents sends the user a completion notif
 ```mermaid
 sequenceDiagram
   participant M as AgentManager
-  participant X as pi-subagents completion callback
+  participant X as orchestration completion callback
   participant Y as Your listener
   participant O as Completion outbox
   participant P as Parent session
@@ -194,11 +196,11 @@ sequenceDiagram
 | After an `await`, before the notification is sent | Still suppressed. The notification waits in the outbox (`src/completion-outbox.ts`), and consuming the result cancels it there. It is sent about 200 ms after the completion when the parent is idle (`NOTIFICATION_HOLD_MS`), and at the end of the parent's current tool batch when it is busy |
 | After it was sent | Too late. pi has queued it with `triggerTurn: true`, and it costs the parent a model call |
 
-Fire-and-forget is the intended use: the reply carries nothing to act on, and the channel sits outside the `subagents:rpc:ping` version handshake on purpose (the comment on the consume handler, `src/cross-extension-rpc.ts`), so you can send it unconditionally and an older pi-subagents with no handler simply keeps notifying.
+Fire-and-forget is the intended use: the reply carries nothing to act on, and the channel sits outside the `subagents:rpc:ping` version handshake on purpose (the comment on the consume handler, `src/cross-extension-rpc.ts`), so you can send it unconditionally and an older build with no handler simply keeps notifying.
 
 Consumption is not permanent across runs: a resume (`AgentManager.resume`) resets the consumed flag so the new result can be delivered.
 
-One related thing that lives nowhere else: on every agent settle, pi-subagents writes a session entry — not an event — via `pi.appendEntry("subagents:record", …)` (the manager's completion callback, `src/index.ts`; the shape is `AgentRecordEntryData` in `src/agent-record-entry.ts`), carrying `id`, `type`, `description`, `status`, `result`, `error`, `startedAt` and `completedAt`, plus `sessionFile`, `handle` and `alias` when the agent has them, and `worktreeLost: true` when its work lived in a worktree that has since been removed. `get_subagent_result` answers from it once the live record is gone, by id or by the entry's handle or alias. `Agent({ resume })` reopens the agent's session from its id, and the entry also serves cross-extension history reconstruction. It is append-only history, not something to react to.
+One related thing that lives nowhere else: on every agent settle, orchestration writes a session entry — not an event — via `pi.appendEntry("subagents:record", …)` (the manager's completion callback, `src/index.ts`; the shape is `AgentRecordEntryData` in `src/agent-record-entry.ts`), carrying `id`, `type`, `description`, `status`, `result`, `error`, `startedAt` and `completedAt`, plus `sessionFile`, `handle` and `alias` when the agent has them, and `worktreeLost: true` when its work lived in a worktree that has since been removed. `get_subagent_result` answers from it once the live record is gone, by id or by the entry's handle or alias. `Agent({ resume })` reopens the agent's session from its id, and the entry also serves cross-extension history reconstruction. It is append-only history, not something to react to.
 
 ## Steering a running agent
 
@@ -296,7 +298,7 @@ You can send `consume` without checking: an older build has no handler and just 
 
 `subagents:ready` is the discovery signal. RPC handlers and the broadcast are wired on bound `session_start`, not during extension loading. Agent sessions do not bind this extension.
 
-The consequence is worth stating plainly: **a session that excludes pi-subagents is indistinguishable from pi-subagents not being installed.** It emits no `subagents:ready` and answers nothing. Give discovery a timeout and treat expiry as "not available here" rather than waiting indefinitely. The payload is `{}` — read nothing off it. Handlers are torn down and `rpcHandle` reset in the `session_shutdown` handler, so a later `session_start` re-registers and re-emits.
+The consequence is worth stating plainly: **a session that excludes orchestration is indistinguishable from orchestration not being installed.** It emits no `subagents:ready` and answers nothing. Give discovery a timeout and treat expiry as "not available here" rather than waiting indefinitely. The payload is `{}` — read nothing off it. Handlers are torn down and `rpcHandle` reset in the `session_shutdown` handler, so a later `session_start` re-registers and re-emits.
 
 RPC launches do not emit `subagents:created`. Use the accepted ID for bookkeeping. `subagents:started` fires when the manager reaches the runner, before child session initialization; a startup error may produce `subagents:failed` without a `started` event.
 

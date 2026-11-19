@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **⚠️ Breaking: Cross-extension RPC v2 → v3.** Check the version and capabilities on `ping`, and drop `isBackground`. A successful spawn only acknowledges acceptance; listen for terminal events or query the accepted ID for startup errors.
 
+> **⚠️ Breaking: Fork package and extension renamed.** The package is now `@lfld287/orchestration`; install it with `pi install git:github.com/lfld287/orchestration`. The extension short name and log prefix changed from `pi-subagents` to `orchestration`; replace the old short name with `orchestration` in any pi configuration entries that refer to this extension. The npm package `@tintinweb/pi-subagents` still points to upstream and is unaffected.
+
 > **⭐ New — set the prompt cache retention for subagents** ([#464](https://github.com/tintinweb/pi-subagents/pull/464)). Let short-lived subagents skip the main session's long cache tier: set `cacheRetention`, or `cache_retention:` per agent.
 
 ### Added
@@ -24,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`subagents:rpc:get` and `subagents:rpc:list` return agent state** ([#442](https://github.com/tintinweb/pi-subagents/issues/442) — thanks [@sergio-agosti](https://github.com/sergio-agosti)). Use them when your extension missed the lifecycle events; a record normally stays readable for about 10 minutes after the agent finishes. `subagents:rpc:ping` advertises both channels in `features`.
 - **`get` and `list` flag a finished agent whose completion message has not been delivered yet** ([#103](https://github.com/tintinweb/pi-subagents/issues/103) — thanks [@ramhaidar](https://github.com/ramhaidar)). `notificationPending: true` covers the gap when the parent is busy or a group is waiting for more results. Auto-continue callers should check the flag as well as the run status.
 - **Set the prompt cache retention for subagents** ([#464](https://github.com/tintinweb/pi-subagents/pull/464), superseding [#456](https://github.com/tintinweb/pi-subagents/pull/456) — thanks [@0oAstro](https://github.com/0oAstro)). The new `cacheRetention` setting (`inherit`, `none`, `short`, `long`; also in `/agents → Settings`) and per-agent `cache_retention:` frontmatter apply to subagents only. The default `inherit` keeps pi's existing behavior.
+
+### Changed
+- **The fork carries its own package, repository, and documentation identity, installed from Git.** The protocol and configuration contracts are unchanged: `subagents:*` events and RPC channels, `subagents.json`, `.pi/agents/`, the `pi.subagents` manifest key, and tool names all stay the same.
+- **README badges and links point at the fork.** The upstream npm and pi.dev badges were removed, and repository links now use `main`.
 
 ### Fixed
 - **`subagents:rpc:stop` gives the stopped agent time to settle** ([#443](https://github.com/tintinweb/pi-subagents/issues/443) — thanks [@VolodymyrMachekhin](https://github.com/VolodymyrMachekhin)). The reply waits up to 5 s by default, or `settleTimeoutMs`, and reports `{ settled }`. If it returns `settled: false`, check `get` for `settling` or send stop again before starting replacement work.

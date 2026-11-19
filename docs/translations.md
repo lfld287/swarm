@@ -22,7 +22,7 @@ The absolute URL is required alongside the relative link, because the relative l
 
 - Anything in a code span or code block, including comments inside code blocks.
 - Tool names (`Agent`, `get_subagent_result`, `steer_subagent`), slash commands, menu paths (`/agents → Settings → Widget`), setting keys, frontmatter fields, file paths, CLI flags, event and RPC channel names, keys and keybindings.
-- Product names: pi, Claude Code, FleetView, npm, DeepSeek Harness, Git.
+- Product names: orchestration, pi, Claude Code, FleetView, npm, DeepSeek Harness, Git.
 - `worktree`: it stays English, written as plain text, in all three languages.
 
 ## Glossary
@@ -32,7 +32,7 @@ The absolute URL is required alongside the relative link, because the relative l
 | sub-agent / subagent | 子代理 | サブエージェント | 서브에이전트 |
 | agent | 代理 | エージェント | 에이전트 |
 | main agent | 主代理 | メインエージェント | 메인 에이전트 |
-| orchestration | 编排 | オーケストレーション | 오케스트레이션 |
+| orchestration (common noun) | 编排 | オーケストレーション | 오케스트레이션 |
 | background | 后台 | バックグラウンド | 백그라운드 |
 | steer (mid-run) | 引导 | ステアリング (gloss once: 指示を送って軌道修正) | 스티어링 |
 | spawn | 启动 | 起動 | 실행 |
