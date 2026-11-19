@@ -914,10 +914,8 @@ function lastLoaderOpts(): Record<string, unknown> {
 }
 
 describe("agent-runner session persistence", () => {
-  it("persists by default, so a handle can reopen the conversation later", async () => {
-    // `rememberAgents` defaults on: the session file is the only thing an
-    // evicted agent leaves behind, so without it `@explore` after cleanup
-    // could only ever start a fresh agent.
+  it("persists by default, so the Agent tool can reopen the conversation after eviction", async () => {
+    // `rememberAgents` defaults on: reopening requires the saved session file.
     vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig());
     const { session } = createSession("OK");
     createAgentSession.mockResolvedValue({ session });
@@ -2705,9 +2703,8 @@ describe("agent-runner ext: tool selectors", () => {
   });
 
   // Frontmatter is authoritative (README "Frontmatter is authoritative"): the
-  // agent file's `isolated` holds on every spawn path, not only the ones that
-  // resolve it before calling the runner. `@handle` mentions and RPC spawns
-  // pass no `isolated` at all.
+  // agent file's `isolated` holds on every spawn path, even when an RPC spawn
+  // does not pass an `isolated` option.
   describe("the agent file's `isolated` wins over the spawn option", () => {
     function run(fileIsolated: boolean | undefined, optionIsolated: boolean | undefined) {
       setupExtAgent({ extensions: true, builtinToolNames: ["read"], extSelectors: ["ext:foo"], isolated: fileIsolated });
@@ -2864,8 +2861,7 @@ describe("agent-runner thinking level inheritance", () => {
 });
 
 // The limit a run will enforce, resolved before the run starts. The widget's
-// turn counter has to predict it for agents spawned outside the Agent tool
-// (mentions, cross-extension RPC), and a second copy of the expression there
+// turn counter has to predict it for RPC spawns. A second copy of the expression
 // would drift from the one runAgent enforces — so both call this.
 describe("resolveEffectiveMaxTurns", () => {
   let prevDefault: number | undefined;

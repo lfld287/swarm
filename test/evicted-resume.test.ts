@@ -75,7 +75,7 @@ function boot(branch: any[]) {
   const agent = (params: Record<string, unknown>) =>
     tools.get("Agent").execute("tc", { description: "Review the change", subagent_type: "Surveyor", ...params }, undefined, undefined, context);
   const read = (id: string) => tools.get("get_subagent_result").execute("read", { agent_id: id }, undefined, undefined, context);
-  return { agent, read, lifecycle, manager: publishedManager() };
+  return { agent, read, lifecycle, pi, context, manager: publishedManager() };
 }
 
 /**
@@ -141,6 +141,47 @@ describe("Agent({ resume }) once the live record is gone", () => {
 
     expect(vi.mocked(runAgent).mock.lastCall![3].resumeSessionFile).toBe(sessionFile);
     expect((res as any).details.agentId).toBe(id);
+  });
+
+  it("can reopen again after stopping an evicted agent's queued reopen", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "Date"] });
+    writeFileSync(join(hermetic!.dir, ".pi", "subagents.json"), JSON.stringify({ maxConcurrent: 1, schedulingEnabled: false, outputTranscript: false }));
+    const branch: any[] = [];
+    settleWith("FIRST-RUN", sessionFile);
+    const { agent, context, lifecycle, manager, pi } = boot(branch);
+    await lifecycle.get("session_start")?.({ type: "session_start" }, context);
+    const { details: { agentId: id } } = await agent({ prompt: "Review the change." });
+    await manager.waitForAll();
+    vi.advanceTimersByTime(11 * 60_000);
+    expect(manager.getRecord(id)).toBeUndefined();
+
+    const blocker = Promise.withResolvers<Awaited<ReturnType<typeof runAgent>>>();
+    settleWith("RESUMED-RUN", sessionFile);
+    vi.mocked(runAgent).mockImplementationOnce(() => blocker.promise);
+    try {
+      const running = await agent({ prompt: "Occupy the only slot." });
+      expect(manager.getRecord(running.details.agentId)?.status).toBe("running");
+      const queued = await agent({ prompt: "Continue.", resume: id });
+      expect(queued.details).toEqual({ agentId: id, status: "queued" });
+
+      const [, stop] = pi.events.on.mock.calls.find(([channel]: [string]) => channel === "subagents:rpc:stop");
+      await stop({ requestId: "stop-queued-reopen", agentId: id });
+      const stopped = manager.getRecord(id);
+      expect(stopped).toMatchObject({ status: "stopped", sessionFile });
+      expect(stopped?.session).toBeUndefined();
+
+      const retry = await agent({ prompt: "Try again.", resume: id });
+      expect(textOf(retry)).not.toContain("no active session");
+      expect(retry.details).toEqual({ agentId: id, status: "queued" });
+    } finally {
+      blocker.resolve({ responseText: "BLOCKER", session: { dispose: vi.fn() } as any, aborted: false, steered: false });
+      await manager.waitForAll();
+    }
+
+    expect(runAgent).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(runAgent).mock.lastCall?.[2]).toBe("Try again.");
+    expect(vi.mocked(runAgent).mock.lastCall?.[3].resumeSessionFile).toBe(sessionFile);
+    expect(manager.getRecord(id)).toMatchObject({ status: "completed", result: "RESUMED-RUN" });
   });
 
   it("appends to the agent's transcript instead of starting it over", async () => {

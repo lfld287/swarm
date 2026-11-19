@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentPrompt, inheritableParentPrompt } from "../src/prompts.js";
+import { buildAgentPrompt, describePrompt, inheritableParentPrompt } from "../src/prompts.js";
 import type { AgentConfig, EnvInfo } from "../src/types.js";
+
+describe("describePrompt", () => {
+  it("uses the message as the agent's short label", () => {
+    expect(describePrompt("find every retry marker")).toBe("find every retry marker");
+  });
+
+  it("takes the first line and collapses whitespace", () => {
+    expect(describePrompt("  audit   the RPC path\nthen report back  ")).toBe("audit the RPC path");
+  });
+
+  it("clips a long message rather than putting a paragraph in every agent surface", () => {
+    const label = describePrompt("x".repeat(200));
+    expect(label).toHaveLength(40);
+    expect(label.endsWith("…")).toBe(true);
+  });
+});
 
 const env: EnvInfo = {
   isGitRepo: true,

@@ -55,7 +55,6 @@ https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
 - **Conversation viewer** — select any agent in `/agents` to open a live-scrolling overlay of its full conversation (auto-follows new content, scroll up to pause). In pi's fullscreen mode it is a borderless, full-terminal observer with mouse support. Steer a running agent inline by pressing `Enter` to open a composer, typing, then `Enter` to send (`Esc` or an empty submit returns) — the message appears as a user message and redirects the agent after its current tool. Stop a still-running agent by pressing `x` (then `x` again to confirm). Tool calls render the way they do in pi's own transcript, through the renderers registered in the agent's session: a bash call shows its command and output, `read` its line numbers, `edit` its diff, an extension tool its own renderer, and a tool without one falls back to its arguments plus a bounded output preview. `ctrl+o` (or whatever `app.tools.expand` is bound to) unfolds elided tool output. Assistant text renders as Markdown; `m` cycles that between off, assistant-only and everything (see [Viewer markdown](#persistent-settings))
 - **Custom agent types** — define agents in `.pi/agents/<name>.md` or `.agents/agents/<name>.md` (project) or globally, with YAML frontmatter: custom system prompts, model selection, thinking levels, tool restrictions, and Claude Code-compatible colored name badges
 - **Package-shipped agents** — a pi package can declare its own `.md` agents with `"pi": { "subagents": { "agents": ["./agents"] } }` in its `package.json`, so `pi install` is the whole setup: no copying files into `.pi/agents/` on every machine or container start. Only packages pi has actually installed are read (never `node_modules`), package definitions rank below every agent you wrote, and `/agents` shows them read-only with Eject and Disable. Narrow or switch it off with `packageAgents`. **[Full guide](https://github.com/lfld287/swarm/blob/main/docs/packages.md)**
-- **Agent mentions** — subagents are first-class: type `@reviewer also check the RPC path` at the prompt and it goes to that agent instead of the main model, without a word of it entering the chat. One syntax covers the whole lifecycle — message it while it runs, resume it once it has finished, reopen its session from disk long after that, or start it if it never ran. Mentioning an agent that isn't running spawns it through an off-screen clone of the conversation, so it gets Claude Code's context-written prompt and a real `Agent` tool call without a word of it reaching the chat; `direct` mode starts it here from your text instead, with no model call at all. The orchestrator can `name` an agent so you address it as `@auth-audit`, and handles work in `steer_subagent`/`get_subagent_result` too. `@` completes live agents, resumable ones, and startable types alongside pi's file completion; `@main` forces text back to the main model. Toggle via `/agents → Settings → Agent mentions`
 - **Mid-run steering** — inject messages into running agents to redirect their work without restarting
 - **Session resume** — pick up where an agent left off, preserving its conversation context. The resumed run returns the same agent ID on acceptance and sends a completion notification like a fresh spawn
 - **Graceful turn limits** — agents get a "wrap up" warning before hard abort, producing clean partial results instead of cut-off output
@@ -84,7 +83,7 @@ Or load directly for development:
 pi -e ./src/index.ts
 ```
 
-Requires pi **1.1.0 or newer**: pi 0.86 and 0.87 moved the system prompt and conversation history into the session transcript, and the `@handle` conversation clone and the agent transcript files are built on that model. The `peerDependencies` range declares it, so npm flags an older pi at install time.
+Requires pi **1.1.0 or newer**: pi 0.86 and 0.87 moved the system prompt and conversation history into the session transcript, and agent transcripts and reopening saved sessions rely on that model. The `peerDependencies` range declares it, so npm flags an older pi at install time.
 
 ### Other hosts
 
@@ -108,7 +107,7 @@ extensions: false
 Review code without making changes. Cite file paths and explain each finding.
 ```
 
-Start pi in that project. Ask the main agent to run `reviewer`, or in the TUI use `@reviewer Find all files that handle authentication`. The main agent can spawn the role with the `Agent` tool:
+Start pi in that project. Ask the main agent to run `reviewer`. The main agent can spawn the role with the `Agent` tool:
 
 ```typescript
 Agent({
@@ -203,77 +202,7 @@ Observer mouse events are consumed, including at scroll limits, so they do not s
 
 This is an initial implementation. Mouse text selection, copy-on-select, link activation, and switching agents without leaving the observer are not implemented. pi's global shortcuts remain host-owned: its fullscreen search searches the main transcript, not the observer. The scrollbar, jump indicator, and mouse controls apply only to fullscreen mode; regular mode retains the original viewer.
 
-### Agent mentions
-
-Subagents are addressable. Every agent has a typeable handle — the agent type, lowercased, numbered when instances collide (`reviewer`, `reviewer-2`) — and `@handle <message>` at the prompt talks to that agent, whatever state it happens to be in. Type `@` to pick one:
-
-```
-❯ @
-  @auth-audit     send message · Reviewer · running · audit the auth flow
-  @reviewer-2      send message · running · find flaky tests
-  @code-review    resume · code-review · check the diff
-  @planner           start agent · Software architect agent for designing implementation plans.
-  index.ts        src/index.ts                        ← pi's own file rows, still there
-  index.d.ts      dist/index.d.ts
-```
-
-The handle names the **agent**, not one process, so a single syntax covers its whole lifecycle:
-
-| State | `@reviewer fix the flaky test` does |
-|-------|-----------------------------------|
-| running or queued | sends the message into its conversation, exactly as `steer_subagent` would |
-| finished | **resumes** it in the background from its existing session, continuing where it left off |
-| finished long ago, record gone | **reopens** its session from disk and continues there |
-| never started | **starts** it — by default, through a clone of this conversation ([below](#starting-a-new-agent)) |
-
-No turn is ever spent in the main conversation, and nothing about the mention enters the chat. The answer comes back as the ordinary background-completion notification, so the main model can relay it.
-
-#### Starting a new agent
-
-Claude Code does not start a mentioned agent itself. `@agent-<type>` becomes an *attachment* appending a `<system-reminder>` to your prompt — "the user has expressed a desire to invoke the agent X; please invoke the agent appropriately, passing in the required context to it" — and the main model makes the tool call. There is no tool forcing and no allowed-tools narrowing: the mention constrains *which* agent, not what it is told. So the model writes the agent's prompt, giving it the conversation context a cold spawn lacks.
-
-The cost is a visible turn — the model's reasoning and its tool block, narrating a decision you already made by typing the handle. This extension keeps the mechanism and moves it off-screen. The conversation is copied into a throwaway in-memory session, that clone takes the turn holding only the `Agent` tool, and what it starts is an ordinary top-level agent:
-
-```
-@cyan whats your favorite color        →  (nothing in the chat)
-  └─ clone of this conversation, off-screen
-       └─ Agent(subagent_type: "cyan", prompt: …)
-            ▸ Cyan Agent   favorite color        ← widget, fleet row, handle
-```
-
-It is a literal clone — the session's own entries and the same system prompt, not [`inherit_context`](#frontmatter-fields)'s text rendering of them — taken from memory and compaction-aware, so what the copy reads is what the main model is working from. The clone gets one tool and one job; it cannot read, write or run anything, because an invisible turn with the full toolset could do invisible work. The agent it starts is attributed to the *real* session, so its transcript and `rootSessionId` land where they would have anyway, and it carries no `tool-use-id` — the main conversation never issued one.
-
-| Mode | `@planner sketch the migration`, with no Planner role running |
-|------|----------------------------------------------------------|
-| `model` (default) | a clone of this conversation takes the turn off-screen and calls `Agent`, so the agent starts with a prompt **written from the conversation**. Nothing reaches the chat but a `Prompting @planner…` toast — the wording marks the wait for that turn, where `direct`'s `Started @planner` means it is already running |
-| `direct` | the agent starts here, immediately, with your message verbatim as its prompt (after this conversation, if its file sets `inherit_context`). No model call at all, so no latency before it begins |
-| `off` | `@` means only "attach a file" again |
-
-Either way the started agent honours its own frontmatter — `model:`, `thinking:`, `max_turns:` all apply, since neither path passes them and the agent's config wins, and `inherit_context: true` hands it this conversation even in `direct` mode. Mentioning something as the very first thing in a session works: there is simply no history to carry, and the clone still runs on your model and system prompt. If it cannot deliver at all — a model can always answer in prose instead of calling the tool — the agent is started directly with your text and the toast says so, rather than leaving you with nothing running.
-
-Mentions are TUI-only. In `pi -p '@planner the migration'`, pi itself reads the leading `@planner` as a file to attach and exits with `File not found` before any extension sees the prompt. For a headless run, ask for the custom role in plain words so the model calls the `Agent` tool; see [Command line](#command-line).
-
-Two things to weigh against `direct`: the clone re-sends the whole conversation, and the agent does not start until that turn finishes.
-
-**Named agents.** The `Agent` tool takes an optional `name`, so the orchestrator can call one `auth-audit` instead of leaving you to tell `@reviewer-2` from `@reviewer-3`. A name is *additive*: the type-derived handle is still assigned, so `@reviewer` keeps reaching that agent rather than starting a second one beside it. Both names share one namespace — an alias can never shadow a live handle or the reverse — and the popup shows one row per agent, under its alias, with the type moved into the description. `steer_subagent` and `get_subagent_result` accept a handle too, so you and the model address agents the same way.
-
-**Resuming much later.** Because subagent sessions are persisted by default ([`rememberAgents`](#persistent-settings)), a handle keeps working after the agent's in-memory record is evicted: `@reviewer anything else?` reopens the conversation from disk. Only the *definition* is re-resolved, so a continuation runs under the agent type's current prompt and tools, not the ones the first run used. The model and thinking level are the ones the session recorded; if that model can no longer be used, pi falls back to its default and warns. If the type has since been deleted or disabled, the resume is refused rather than falling back to another agent — re-enable it and the handle works again. Names from an evicted agent stay reserved, so a later Reviewer becomes `reviewer-2` rather than shadowing something you can still reach; the 100 most recent are kept, and all of them are forgotten on `/new` and session switch. A resumed agent takes those names back, so `@reviewer` keeps meaning the same conversation. An agent whose session was only ever in memory leaves nothing to reopen, and the mention starts a fresh one instead; if the session file has since been deleted, the mention says so and frees the handle rather than silently sending your message to a new agent.
-
-The grammar mirrors Claude Code's, and is deliberately narrow so nothing gets swallowed by accident:
-
-| Input | Goes to |
-|-------|---------|
-| `@reviewer fix the flaky test` | the `reviewer` agent |
-| `@agent-reviewer fix the flaky test` | the same agent — Claude Code's manual spelling, accepted as a synonym |
-| `@main @reviewer is not a mention` | the main model, with `@main ` stripped — the escape hatch |
-| `@reviewer` (no message) | the main model — a bare handle is never a send |
-| `hey @reviewer look at this` | the main model — only a **leading** mention is routed |
-| `@src/index.ts summarize this` | the main model, with pi's normal file attachment |
-| `@nosuchagent hello` | the main model, verbatim — no agent, no type, no interception |
-
-While an agent is live its handle addresses *it*, so `@reviewer` never starts a second Reviewer alongside a running one — use the `Agent` tool for deliberate parallelism. `@<agent-id>` works too. `main` is reserved and can never be an agent's handle (a type slugging to it gets `main-2`); handles are capped at 64 characters. A handle written as typed always wins over the `@agent-` form, so an agent genuinely called `agent-reviewer` stays reachable. Suggestions list live agents first, then resumable ones, then startable types — and then pi's own file rows, in the same popup: `@` stays the file picker it always was, and the handles are added to it rather than replacing it. Disable the whole thing via `/agents → Settings → Agent mentions`.
-
-A `direct`-mode start takes the non-tool spawn path shared with the scheduler and cross-extension RPC, so — like those — it writes no `.output` transcript. That is the trade for skipping the model call: a `model`-mode start goes through the real `Agent` tool and keeps everything. Live tool activity and the turn counter are *not* part of that trade — a direct start renders them like any other agent. A mention-*resumed* agent goes through the full resume wiring and keeps both in either mode.
+### Agent results
 
 Individual agent results render Claude Code-style in the conversation:
 
@@ -350,7 +279,7 @@ All fields are optional — sensible defaults for everything.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `description` | filename | Agent description shown in tool listings |
-| `name` | filename | **The agent's type** — what `subagent_type` and `@handle` address. Claude Code's rule: the filename doesn't have to match, so `blubb.md` with `name: code-review` dispatches as `code-review`. Omit it and the filename is used. Any value works except one containing `:`, which Claude Code reserves for plugin-scoped identifiers — such a file is skipped with a warning. Two files may declare the same name; the later load wins, as a filename clash always did |
+| `name` | filename | **The agent's type** — what `subagent_type` selects. Claude Code's rule: the filename doesn't have to match, so `blubb.md` with `name: code-review` dispatches as `code-review`. Omit it and the filename is used. Any value works except one containing `:`, which Claude Code reserves for plugin-scoped identifiers — such a file is skipped with a warning. Two files may declare the same name; the later load wins, as a filename clash always did |
 | `display_name` | the type | Label shown in the UI (widget, agent list, badges) — cosmetic only, and independent of `name`. Claude Code has no equivalent; a file that sets only `name` badges as its type, unchanged |
 | `color` | — | Background color for the agent name badge in the Agent tool header, widget, FleetView, and conversation viewer. Supports Claude Code's `red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink`, `cyan` (the values its own default theme uses); quoted six-digit hex such as `"#8B5CF6"`; and Agency Agents aliases (`amber`, `teal`, `indigo`, `gold`, `neon-green`, `neon-cyan`, `metallic-blue`, `violet`, `rose`, `lime`, `gray`/`grey`, `fuchsia`, `slate`, `navy`). Badge text is black or white, whichever clears 4.5:1 against the rendered background — Claude Code uses one inverse color for every badge. Invalid values render no badge and preserve each surface's existing theme foreground |
 | `tools` | all 7 | Which tools the agent can call. Built-in names (`read, grep, …`, or Claude Code's `Read, Glob, …`), `*` / `all` (all built-ins), `none`, `ext:<extension>` / `ext:<extension>/<tool>` selectors for extension tools, and bare `mcp__<server>__<tool>` entries for MCP tools. See [Tool & extension scoping](#tool--extension-scoping) below |
@@ -374,8 +303,8 @@ All fields are optional — sensible defaults for everything.
 
 Frontmatter is authoritative. If an agent file sets `model`, `thinking`, `max_turns`, `inherit_context`, `isolated`, or `isolation`, those values are locked for that agent. `Agent` tool parameters only fill fields the agent config leaves unspecified. Other spawn paths differ per field:
 
-- `isolated` and `isolation` hold on every spawn path, including `@handle` mentions, schedules, and [cross-extension RPC](https://github.com/lfld287/swarm/blob/main/docs/rpc.md).
-- `inherit_context` applies to `Agent` tool launches and to `@handle` starts in either mode. Scheduled runs never inherit; an RPC caller opts in with `inheritContext`.
+- `isolated` and `isolation` hold on every spawn path, including schedules and [cross-extension RPC](https://github.com/lfld287/swarm/blob/main/docs/rpc.md).
+- `inherit_context` applies to `Agent` tool launches. Scheduled runs never inherit; an RPC caller opts in with `inheritContext`.
 
 **Forgiving `model:` resolution.** A `model:` pin is matched against pi's model registry tolerantly, so cosmetic id variations don't silently drop the agent back to the parent's model: `.` and `-` are treated as equivalent in version numbers (`claude-haiku-4.5` ≡ `claude-haiku-4-5`), a trailing `-YYYYMMDD` date stamp is optional (`anthropic/claude-haiku-4-5-20251001` matches an undated registry id and vice-versa), and a `provider/modelId` whose named provider doesn't carry that model retries the bare id against every provider. Precedence is **exact → fuzzy under the named provider → same model under any provider → unavailable**, so an exact match always wins and dated snapshots aren't conflated. If nothing resolves, the pin can't run and the agent inherits the parent model — `/agents → Agent types` flags this case as `(unavailable, fallback: inherit)` and shows the resolved target `(→ provider/id)` when resolution lands on a different provider or version than configured. (This is distinct from [Model Scope](#model-scope) enforcement, which matches the `enabledModels` allowlist by *exact* entry.)
 
@@ -479,7 +408,7 @@ Launch or resume a background subagent. A successful call returns an agent ID on
 |-----------|------|----------|-------------|
 | `prompt` | string | yes | The task for the agent |
 | `description` | string | yes | Short 3-5 word summary (shown in UI) |
-| `name` | string | no | Memorable name for this agent (`auth-audit`), addressable as `@name` and accepted by `steer_subagent`/`get_subagent_result`. Additive — the type-derived handle is still assigned |
+| `name` | string | no | Memorable name for this agent (`auth-audit`), accepted by `steer_subagent`/`get_subagent_result`. Additive — the type-derived handle is still assigned |
 | `subagent_type` | string | yes | Custom agent type. Required by the schema; a resume uses the saved type |
 | `model` | string | no | Model — `provider/modelId` or fuzzy name (`"haiku"`, `"sonnet"`). Resolved tolerantly (`.`/`-` and a trailing date stamp interchangeable) with provider fallback |
 | `thinking` | string | no | Thinking level: off, minimal, low, medium, high, xhigh, max (availability depends on pi version and model) |
@@ -490,13 +419,15 @@ Launch or resume a background subagent. A successful call returns an agent ID on
 | `inherit_context` | boolean | no | Fork parent conversation into agent |
 | `schedule` | string | no | Cron, interval or one-shot; returns a job ID. Incompatible with `inherit_context` and `resume`. Absent when `schedulingEnabled: false`. See [Scheduling](#scheduling) |
 
+Each run gets a handle derived from its type (`reviewer`, `reviewer-2`). The optional `name` adds an alias in the same namespace. Both can be passed as `agent_id` to the result and steering tools; use the agent ID for `Agent({ resume })`.
+
 ### `get_subagent_result`
 
 Read the current status or full result immediately. A queued or running agent returns status without consuming the eventual completion notification; reading a finished result suppresses any notification not yet delivered.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `agent_id` | string | yes | Agent ID or handle — its `name` if one was given, otherwise its type (`reviewer`, `reviewer-2`) |
+| `agent_id` | string | yes | Agent ID, type-derived handle (`reviewer`, `reviewer-2`), or `name` alias |
 | `verbose` | boolean | no | Include full conversation log |
 
 A finished agent's result stays retrievable after its in-memory record is cleaned up (about ten minutes after it finishes) or lost to a reload: the final record is saved in the session as a `subagents:record` entry, and `get_subagent_result` answers from it by id or by handle, without the stats or the conversation (`verbose`). That answer states when the run finished and how long ago, since the entry lasts as long as the session and a days-old result would otherwise read as current.
@@ -563,7 +494,7 @@ A resumed agent gets a fresh budget: `max_turns` is counted from the resume prom
 
 ## Concurrency
 
-`maxConcurrent` (default `10`) caps background concurrency for tool calls, resumes, mentions and RPC launches. Excess agents are queued in arrival order and start as slots free up. The widget shows a collapsed count for queued agents. Scheduled fires bypass the queue check, but still count toward running agents while active.
+`maxConcurrent` (default `10`) caps background concurrency for tool calls, resumes, and RPC launches. Excess agents are queued in arrival order and start as slots free up. The widget shows a collapsed count for queued agents. Scheduled fires bypass the queue check, but still count toward running agents while active.
 
 ## Join Strategies
 
@@ -628,7 +559,6 @@ A row whose value comes from a settings file is tagged with that file (`project`
 | `strictAgentFiles` | `false` | Fail startup on malformed local agent files |
 | `toolDescriptionMode` | `"full"` | `full`, `compact`, or `custom` |
 | `fleetView` | `true` | Show the FleetView list below the editor |
-| `agentMentions` | `"model"` | `model`, `direct`, or `off` |
 | `rememberAgents` | `true` | Persist agent sessions by default |
 | `cacheRetention` | `"inherit"` | `inherit`, `none`, `short`, or `long` |
 | `widgetMode` | `"all"` | `all` or `off` |
@@ -647,9 +577,7 @@ A row whose value comes from a settings file is tagged with that file (`project`
 
 **Package agents** (`packageAgents`, on when unset): `true` admits every declaring package, `false` none, and an allowlist admits only packages it names — matched case-insensitively against the unscoped short name (`@acme/tools` → `tools`), full name, or settings source string. A bare string is read as a one-entry list. Write an allowlist in `subagents.json`; toggling the menu row replaces it. See [Shipping agents in a pi package](#shipping-agents-in-a-pi-package).
 
-**Agent mentions** (`agentMentions`, default `"model"`): whether [`@handle message`](#agent-mentions) at the prompt addresses that subagent instead of the main model — messaging, resuming or starting it — and whether `@` offers agents alongside pi's file completion. `"model"` and `"direct"` differ only in [who starts an agent that isn't running](#starting-a-new-agent): an off-screen clone of this conversation, via a `<system-reminder>` and a real `Agent` call, or this extension, immediately and with no model call. Messaging and resuming are direct in both. `"off"` gates all three actions plus the suggestion list, so `@` means only "attach a file" again and every `@…` prompt reaches the main model verbatim. Toggle via `/agents → Settings → Agent mentions`; applied live. The booleans this setting used to take are still read — `true` as `"model"`, `false` as `"off"`.
-
-**Remember agents** (`rememberAgents`, default `true`): whether subagents persist their pi session, which is what lets [`@handle`](#agent-mentions) and `Agent({ resume })` reopen an agent's conversation after its in-memory record has been evicted. Two visible consequences of the default: subagents write a session file, and they nest under the session that spawned them in pi's `/resume`. A custom agent's `persist_session` frontmatter overrides this per agent, in both directions. Toggle via `/agents → Settings → Remember agents`; with it off, handles expire with their record (roughly ten minutes past completion) and `@reviewer` then starts a fresh agent rather than resuming — the behaviour before this setting existed — and a later `resume` is refused because nothing was saved. When pi's `/fork` or `/clone` copies a session, resuming one of its agents from the copy forks that agent's session too, so the two parents never write into one file. That agent's `.output` transcript in the copy starts at the resume.
+**Remember agents** (`rememberAgents`, default `true`): whether subagents persist their pi session so `Agent({ resume })` can reopen the conversation after its in-memory record has been evicted. Two visible consequences of the default: subagents write a session file, and they nest under the session that spawned them in pi's `/resume`. A custom agent's `persist_session` frontmatter overrides this per agent, in both directions. Toggle via `/agents → Settings → Remember agents`; an in-memory-only agent can still be resumed while its record is retained, but not after eviction. When pi's `/fork` or `/clone` copies a session, resuming one of its agents from the copy forks that agent's session too, so the two parents never write into one file. That agent's `.output` transcript in the copy starts at the resume.
 
 **Prompt cache retention** (`cacheRetention`, default `inherit`): the prompt cache tier subagent model calls request. `short` and `long` are pi's tiers: on Anthropic 5 minutes and 1 hour, on direct OpenAI in-memory and 24 hours; other providers map or ignore them. `none` turns prompt caching off for the subagent's calls. `inherit` leaves pi's default in charge, including `PI_CACHE_RETENTION`. Use `short` to stop short-lived subagents paying Anthropic's 1-hour cache-write rate when the main session runs with `PI_CACHE_RETENTION=long`; the main session is unaffected. A custom agent's `cache_retention` frontmatter overrides it per agent, and a request that sets its own retention keeps it (pi sends compaction uncached). Toggle via `/agents → Settings → Prompt cache retention`; applies to agents started after the change.
 
@@ -762,7 +690,7 @@ Agent lifecycle events are emitted via `pi.events.emit()` so other extensions ca
 
 | Event | When | Key fields |
 |-------|------|------------|
-| `subagents:created` | An `Agent` tool launch or a live-session resume is accepted, including queued runs; not emitted on a fresh RPC, scheduler, or direct mention launch | [agent fields](#agent-fields) |
+| `subagents:created` | An `Agent` tool launch or a live-session resume is accepted, including queued runs; not emitted on a fresh RPC or scheduler launch | [agent fields](#agent-fields) |
 | `subagents:started` | The manager is about to invoke the runner, including after a queue drain; the session may not exist yet | [agent fields](#agent-fields) |
 | `subagents:completed` | Agent finished successfully, including a turn-limit wrap-up | [agent fields](#agent-fields) |
 | `subagents:failed` | Agent errored, stopped, or aborted | [agent fields](#agent-fields); `status` is `error`, `stopped` or `aborted` |
@@ -937,6 +865,7 @@ const active = agents.some(a =>
 
 ## Upgrading
 
+- **Switching from upstream:** Uninstall or disable `@tintinweb/pi-subagents` before installing this fork. Both register the `Agent` tool and `subagents:rpc:*` channels, so enabling both can start two agents from a single spawn request.
 - **Roles and delegation:** Create or install a custom `.md` role and update callers to name it. `general-purpose`, `Explore`, and `Plan` are no longer bundled or substituted automatically. An explicit `fallbackSubagent` only works when it names an enabled custom role. Subagents can no longer delegate; `allowed_subagents` is ignored and `parentAgentId` / `depth` no longer appear in event or RPC records.
 - **Background-only calls:** Remove `run_in_background` from `Agent` calls (`true` and `false` are both rejected if supplied). In old role frontmatter it is ignored, including `run_in_background: false`. Remove `wait` from `get_subagent_result` and read after the completion notification. Removed settings keys such as `backgroundByDefault`, `maxConcurrentForeground`, `maxConcurrentNested`, `maxSubagentDepth`, and `disableDefaultAgents` are ignored; legacy `widgetMode: "background"` is read as `"all"`.
 - **RPC v3:** Check `ping` before using the new contract. Drop `isBackground`; the option is ignored, and `spawn` success means acceptance, not startup. Observe terminal events or read the accepted ID for startup errors.
@@ -977,9 +906,9 @@ The agent gets a full, isolated copy of the repository. The worktree directory i
 - **Changes made:** changes are committed to a new branch (`pi-agent-<id>`), and the result names the branch and the `git merge` command for it. The branch is the only artifact — the worktree path is gone, so nothing points into it
 - **Agent committed its own work:** the branch is created at the agent's HEAD, preserving its commits (uncommitted leftovers are committed on top first)
 
-A resumed agent never gets a worktree, as in Claude Code: a fresh copy of HEAD would not hold its earlier edits. This covers `Agent({ resume })` and `@handle` once the record is evicted. If its worktree held changes, the resume is refused with "its worktree no longer exists"; the work is on its branch. If the worktree held none, the agent continues in the main checkout without isolation.
+A resumed agent never gets a worktree, as in Claude Code: a fresh copy of HEAD would not hold its earlier edits. This also applies when `Agent({ resume })` reopens an evicted agent. If its worktree held changes, the resume is refused with "its worktree no longer exists"; the work is on its branch. If the worktree held none, the agent continues in the main checkout without isolation.
 
-The agent's system prompt names the worktree as an isolated copy and tells it to work only there, even if other instructions name the main checkout — otherwise an inherited parent prompt or a task prompt mentioning the project path walks it straight back out of the copy. This is a directive, not a sandbox: an agent with shell access can still `cd` out, so don't rely on `isolation` alone to protect the main checkout.
+The agent's system prompt names the worktree as an isolated copy and tells it to work only there, even if other instructions name the main checkout — otherwise an inherited parent prompt or a task prompt naming the project path walks it straight back out of the copy. This is a directive, not a sandbox: an agent with shell access can still `cd` out, so don't rely on `isolation` alone to protect the main checkout.
 
 The automatic preservation commit uses `--no-verify`, so local pre-commit hooks can't block it — the commit is local-only and never pushed, and pre-push/server-side hooks still apply.
 
@@ -1080,8 +1009,7 @@ src/
   model-resolver.ts   # Model resolution: exact provider/modelId with fuzzy fallback
   enabled-models.ts   # Read pi's enabledModels settings (project over global)
   model-scope.ts      # scopeModels allowlist policy
-  mention.ts          # `@handle message` grammar: suggestion triggers and send parsing
-  mention-clone.ts    # Run a mention's turn in a cloned conversation, off the main chat
+  handles.ts          # Allocate unique type-derived handles and aliases
   cross-extension-rpc.ts # ping/spawn/stop/consume/steer/get/list RPC handlers over pi.events
 
   # Scheduling
@@ -1093,7 +1021,7 @@ src/
   skill-loader.ts     # Preload skills (Pi-standard + Agent Skills spec layouts)
   output-file.ts      # Streaming output file transcripts for agent sessions
   worktree.ts         # Git worktree isolation (create, cleanup, prune)
-  prompts.ts          # Config-driven system prompt builder
+  prompts.ts          # System prompt builder and default task descriptions
   context.ts          # Parent conversation context for inherit_context
   settings.ts         # Persistent settings (~/.pi/agent/subagents.json + .pi/subagents.json)
   env.ts              # Environment detection (git, platform)
@@ -1103,7 +1031,6 @@ src/
     fleet-list.ts         # FleetView: navigable agent list below the editor
     conversation-viewer.ts # Live conversation overlay for viewing agent sessions
     viewer-keys.ts        # Viewer scroll, expand and jump keys, resolved through user keybindings
-    agent-mention.ts      # `@` roster (running, resumable, and startable agents) + popup rows
     agents-menu.ts        # /agents root menu, running agents, agent types and detail, create wizards
     schedule-menu.ts      # /agents → Scheduled jobs submenu
     settings-menu.ts      # /agents → Settings page: filter, focus, number editor, terminal-sized list

@@ -427,10 +427,8 @@ export function resolveEffectiveMaxTurns(type: string, explicit?: number): numbe
 
 /**
  * Project default for `persist_session`, from the `rememberAgents` setting.
- * On by default: a persisted session is what lets `@handle` reopen an agent's
- * conversation after its record has been evicted, which is the whole point of
- * addressing an agent by a name that outlives one run. Per-agent frontmatter
- * still overrides it in both directions.
+ * On by default so `Agent({ resume })` can reopen the conversation after its
+ * record has been evicted. Per-agent frontmatter overrides it in both directions.
  */
 let rememberAgents = true;
 
@@ -792,8 +790,7 @@ export async function runAgent(
   const extras: PromptExtras = {};
   if (options.worktreeBase) extras.worktreeBase = options.worktreeBase;
 
-  // Resolved here, not by each caller: mention and RPC spawns pass no `isolated`,
-  // and the agent file's value must hold on every path.
+  // Resolve it here so the agent file's value holds on every spawn path.
   const isolated = agentConfig?.isolated ?? options.isolated;
   // Resolve extensions/skills: isolated overrides to false
   const extensions = isolated ? false : config.extensions;
@@ -1046,7 +1043,6 @@ export async function runAgent(
   // Resolve thinking level: explicit option > (reopen: the session's own) > agent config > parent session level.
   // Without the parent step, an unset level falls through to pi's
   // defaultThinkingLevel (e.g. "max") instead of matching the spawning session.
-  // Same idiom as mention-clone.ts.
   const thinkingLevel = options.thinkingLevel ?? (reopening ? undefined : agentConfig?.thinking ?? ctx.thinkingLevel);
 
   // The `agent({ schema })` contract: this child reports its answer by calling

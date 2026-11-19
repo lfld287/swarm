@@ -123,20 +123,7 @@ export type CacheRetentionSetting = CacheRetention | 'inherit';
 export type ViewerMarkdownMode = 'off' | 'assistant' | 'all';
 
 /**
- * How `@handle message` starts an agent that is not already running.
- * - `model`: inject Claude Code's `agent_mention` reminder and let the main
- *   model spawn it with the `Agent` tool, which is what Claude Code does.
- * - `direct`: spawn it here, immediately, with the typed message as its prompt
- *   and no main-model turn spent.
- * - `off`: `@` means only "attach a file" again.
- *
- * Messaging a running agent and resuming a finished one are direct in every
- * mode — Claude Code only differs from us on the *new* invocation.
- */
-export type AgentMentionMode = 'model' | 'direct' | 'off';
-
-/**
- * What survives a record's eviction so `@handle` keeps working. The live record
+ * Names and session metadata retained after a record is evicted. The live record
  * is discarded after ~10 minutes, but the pi session it wrote is still on disk,
  * and this is the little that is needed to find and describe it again.
  */
@@ -154,7 +141,7 @@ export interface AgentTombstone {
 }
 
 /**
- * What `@handle` resolved to: an agent still in memory, or the remains of one
+ * What an agent reference resolved to: a record still in memory, or the remains of one
  * whose conversation can be reopened from disk.
  */
 export type MentionResolution =
@@ -165,15 +152,14 @@ export interface AgentRecord {
   id: string;
   type: SubagentType;
   /**
-   * Typeable name for the `@handle message` prompt mention, derived from the
-   * agent type and numbered when handles collide (`explore`, `explore-2`).
+   * Tool-addressable name derived from the agent type and numbered when
+   * handles collide (`explore`, `explore-2`).
    */
   handle?: string;
   /**
-   * A second, memorable handle from the spawner's `name` (`@auth-audit`), drawn
-   * from the same namespace as `handle` so the two can never collide. Purely
-   * additive: `handle` is assigned regardless, so a named agent stays reachable
-   * by its type and `@explore` never comes to mean "start another one".
+   * A second, memorable handle from the spawner's `name` (`auth-audit`), drawn
+   * from the same namespace as `handle` so the two can never collide. The
+   * type-derived handle remains valid for a named agent.
    */
   alias?: string;
   description: string;
@@ -207,7 +193,7 @@ export interface AgentRecord {
   outputFile?: string;
   /**
    * The agent's pi session file, when it was persisted (`persist_session`, or
-   * the `rememberAgents` default). Captured so a mention can reopen the
+   * the `rememberAgents` default). Captured so `Agent({ resume })` can reopen the
    * conversation after the record itself has been evicted; undefined for an
    * in-memory session, which leaves nothing to reopen.
    */

@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **⚠️ Breaking: Cross-extension RPC v2 → v3.** Check the version and capabilities on `ping`, and drop `isBackground`. A successful spawn only acknowledges acceptance; listen for terminal events or query the accepted ID for startup errors.
 
-> **⚠️ Breaking: Fork package and extension renamed.** The package is now `@lfld287/swarm`; install it with `pi install git:github.com/lfld287/swarm`. The extension short name and log prefix changed from `pi-subagents` to `swarm`; replace the old short name with `swarm` in any pi configuration entries that refer to this extension. The npm package `@tintinweb/pi-subagents` still points to upstream and is unaffected.
+> **⚠️ Breaking: Fork package and extension renamed.** The package is now `@lfld287/swarm`; install it with `pi install git:github.com/lfld287/swarm`. The extension short name and log prefix changed from `pi-subagents` to `swarm`; replace the old short name with `swarm` in any pi configuration entries that refer to this extension. The npm package `@tintinweb/pi-subagents` still points to upstream and is unaffected. Uninstall or disable it before installing this fork: both register the `Agent` tool and `subagents:rpc:*` channels, so enabling both can start two agents from a single spawn request.
 
 > **⭐ New — set the prompt cache retention for subagents** ([#464](https://github.com/tintinweb/pi-subagents/pull/464)). Let short-lived subagents skip the main session's long cache tier: set `cacheRetention`, or `cache_retention:` per agent.
 
@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`subagents:rpc:stop` gives the stopped agent time to settle** ([#443](https://github.com/tintinweb/pi-subagents/issues/443) — thanks [@VolodymyrMachekhin](https://github.com/VolodymyrMachekhin)). The reply waits up to 5 s by default, or `settleTimeoutMs`, and reports `{ settled }`. If it returns `settled: false`, check `get` for `settling` or send stop again before starting replacement work.
+
+### Removed
+- **Prompt `@` mentions**: Removed agent autocomplete, hidden conversation cloning, and the `agentMentions` setting. In the editor, `@role` now reaches the main model as ordinary text; pi's built-in file completion is unchanged.
 
 ## [0.26.1] - 2026-11-17
 

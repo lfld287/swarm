@@ -37,7 +37,7 @@ export interface AgentRecordEntryData {
    * `persist_session: false`), which leaves nothing to come back to.
    */
   sessionFile?: string;
-  /** Names to give back to the reopened agent, as the `@handle` path does. */
+  /** Names to give back to the reopened agent. */
   handle?: string;
   alias?: string;
   /** Set when the agent's work lived in a worktree that is now gone — see {@link worktreeLost}. */
@@ -87,7 +87,7 @@ function isAgentRecordEntryData(data: unknown): data is AgentRecordEntryData {
  * abandoned branch is not this conversation's.
  *
  * When `matchHandle` is set, the handle and alias match too, case-insensitively
- * like `@handle`, and only if no entry's id is `id`. Resume leaves it off: it
+ * and only if no entry's id is `id`. Resume leaves it off: it
  * reopens whatever this returns, and a handle would reopen a saved session
  * while that agent's live record still exists.
  */
@@ -113,18 +113,16 @@ export function findAgentRecordEntry(ctx: ExtensionContext, id: string, matchHan
 
 /**
  * Whether an evicted agent's saved conversation can be reopened, and the
- * agent type to reopen it under. Shared by `@handle` and `Agent({ resume })`;
- * `reason` completes "Could not resume X —" and "cannot be resumed —".
+ * agent type to reopen it under. `reason` completes "cannot be resumed —".
  *
  * The file is checked here rather than left to SessionManager.open: that runs
  * inside runAgent, whose rejection lands on the record as an agent error, not
  * as a refusal. A `/new` in another pi window or a manual delete makes the
- * conversation unrecoverable (Claude Code's `not_reachable`); `gone` marks
- * that, and the no-file case, as refusals that can never clear.
+ * conversation unrecoverable (Claude Code's `not_reachable`).
  *
  * The Agent tool can use an explicitly configured fallback for a new run.
  * A resume must not: reopening a conversation under a different role's prompt
- * and tools is not continuing it. Both callers reload agent files first.
+ * and tools is not continuing it. The tool reloads agent files first.
  *
  * `worktreeLost` refuses for good, as Claude Code does ("its worktree no
  * longer exists"): the conversation's edits were made in a directory that is
@@ -135,18 +133,17 @@ export function reopenTarget(
   type: string,
   sessionFile: string | undefined,
   worktreeLost?: boolean,
-): { ok: true; type: SubagentType; sessionFile: string } | { ok: false; reason: string; gone: boolean } {
+): { ok: true; type: SubagentType; sessionFile: string } | { ok: false; reason: string } {
   if (sessionFile === undefined) {
-    return { ok: false, reason: "its conversation was not saved (`rememberAgents` or `persist_session` was off)", gone: true };
+    return { ok: false, reason: "its conversation was not saved (`rememberAgents` or `persist_session` was off)" };
   }
-  if (!existsSync(sessionFile)) return { ok: false, reason: "its session is gone", gone: true };
-  if (worktreeLost) return { ok: false, reason: "its worktree no longer exists", gone: true };
+  if (!existsSync(sessionFile)) return { ok: false, reason: "its session is gone" };
+  if (worktreeLost) return { ok: false, reason: "its worktree no longer exists" };
   const originalType = resolveEnabledType(type);
   if (originalType === undefined) {
     return {
       ok: false,
       reason: `${unavailableAgentTypeMessage(type)} To resume, redefine or enable the same role`,
-      gone: false,
     };
   }
   return { ok: true, type: originalType, sessionFile };

@@ -132,14 +132,12 @@ describe("reporting subagent usage back to the parent session", () => {
   });
 
   it("attaches nothing to a call with no tool-call id, and loses none of it", async () => {
-    // The `@handle` mention path: a fork of the conversation calls the
-    // registered tool with `undefined`, and its session is discarded. Usage hung
-    // on that result is spend the user paid for and nobody counted.
+    // Without a tool-call id the result cannot be persisted on a tool message.
     const { tools } = boot({ reportUsage: true });
     runSpending({ input: 100, output: 50, cacheWrite: 10, cost: 0.0123 });
 
-    const cloned = await spawn(tools, undefined);
-    expect(cloned.usage).toBeUndefined();
+    const untracked = await spawn(tools, undefined);
+    expect(untracked.usage).toBeUndefined();
 
     // It was not dropped — the next result the real session gets carries it.
     runSpendingNothing();

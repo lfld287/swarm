@@ -63,7 +63,6 @@ https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
 - **대화 뷰어**: `/agents`에서 아무 에이전트나 선택하면 전체 대화를 실시간으로 스크롤해 보여 주는 오버레이가 열립니다(새 내용을 자동으로 따라가며, 위로 스크롤하면 일시 정지). pi의 전체 화면 모드에서는 테두리 없이 터미널 전체를 쓰는, 마우스를 지원하는 관찰 화면이 됩니다. `Enter`로 입력창을 열고 내용을 입력한 뒤 `Enter`로 보내면 실행 중인 에이전트를 그 자리에서 스티어링할 수 있습니다(`Esc` 또는 빈 내용 제출 시 돌아감). 메시지는 사용자 메시지로 표시되며, 에이전트가 현재 도구 실행을 마친 뒤 방향을 바꿉니다. 아직 실행 중인 에이전트는 `x`를 누르면(확인을 위해 `x`를 한 번 더) 중지됩니다. 도구 호출은 에이전트 세션에 등록된 렌더러를 통해 pi 자체 트랜스크립트와 같은 방식으로 표시됩니다: bash 호출은 명령과 출력, `read`는 줄 번호, `edit`는 diff, 확장 도구는 자체 렌더러로 표시되고, 렌더러가 없는 도구는 인자와, 길이가 제한된 출력 미리보기로 대체됩니다. `ctrl+o`(또는 `app.tools.expand`에 지정된 키)로 생략된 도구 출력을 펼칩니다. 어시스턴트 텍스트는 Markdown으로 렌더링되며, `m`을 누르면 끄기, 어시스턴트만, 전체 순으로 전환됩니다([Viewer markdown](README.md#persistent-settings) 참고)
 - **사용자 정의 에이전트 타입**: `.pi/agents/<name>.md` 또는 `.agents/agents/<name>.md`(프로젝트), 혹은 전역 위치에 에이전트를 정의합니다. YAML frontmatter로 시스템 프롬프트, 모델 선택, 사고 수준, 도구 제한, Claude Code 호환 색상 이름 배지를 지정합니다
 - **패키지에 포함된 에이전트**: pi 패키지는 `package.json`에 `"pi": { "subagents": { "agents": ["./agents"] } }`를 넣어 자체 `.md` 에이전트를 선언할 수 있으므로, `pi install`만으로 설정이 끝납니다. 머신마다 또는 컨테이너가 시작될 때마다 `.pi/agents/`로 파일을 복사할 필요가 없습니다. pi가 실제로 설치한 패키지만 읽으며(`node_modules`는 절대 읽지 않음), 패키지 정의는 직접 작성한 어떤 에이전트보다도 우선순위가 낮고, `/agents`에서는 읽기 전용으로 표시되며 Eject와 Disable을 쓸 수 있습니다. `packageAgents`로 범위를 좁히거나 끌 수 있습니다. **[전체 가이드](https://github.com/lfld287/swarm/blob/main/docs/packages.md)**
-- **에이전트 멘션**: 서브에이전트를 일급 대상으로 다룹니다. 프롬프트에 `@reviewer also check the RPC path`를 입력하면 메인 모델 대신 해당 에이전트에 전달되며, 채팅에는 한 글자도 들어가지 않습니다. 하나의 문법으로 전체 생명 주기를 다룹니다: 실행 중일 때 메시지 보내기, 완료된 뒤 재개하기, 한참 뒤에 디스크에서 세션 다시 열기, 한 번도 실행된 적이 없으면 시작하기. 실행 중이 아닌 에이전트를 멘션하면 화면 밖에서 복제한 대화를 통해 실행되므로, Claude Code처럼 컨텍스트를 바탕으로 작성된 프롬프트와 실제 `Agent` 도구 호출을 얻으면서도 채팅에는 한 글자도 들어가지 않습니다. `direct` 모드는 모델을 전혀 호출하지 않고 입력한 텍스트로 그 자리에서 바로 시작합니다. 오케스트레이터가 에이전트에 `name`을 붙이면 `@auth-audit`처럼 부를 수 있고, 이 이름은 `steer_subagent`/`get_subagent_result`에서도 쓸 수 있습니다. `@`은 pi의 파일 자동 완성과 함께 실행 중인 에이전트, 재개 가능한 에이전트, 시작 가능한 타입을 자동 완성합니다. `@main`은 텍스트를 강제로 메인 모델로 보냅니다. `/agents → Settings → Agent mentions`에서 켜고 끕니다
 - **실행 중 스티어링**: 실행 중인 에이전트에 메시지를 넣어 재시작 없이 작업 방향을 바꿉니다
 - **세션 재개**: 대화 컨텍스트를 유지한 채 에이전트가 멈춘 지점부터 이어서 진행합니다. 요청 수락 시 같은 에이전트 ID를 반환하며, 새로 실행할 때와 마찬가지로 완료 알림을 보냅니다
 - **소프트 턴 제한**: 에이전트는 강제 중단 전에 "마무리하라"는 경고를 받으므로, 잘린 출력 대신 깔끔한 부분 결과를 냅니다
@@ -92,7 +91,7 @@ pi install git:github.com/lfld287/swarm
 pi -e ./src/index.ts
 ```
 
-pi **1.1.0 이상**이 필요합니다. pi 0.86과 0.87에서 시스템 프롬프트와 대화 기록이 세션 트랜스크립트로 옮겨졌고, `@handle` 대화 복제와 에이전트 트랜스크립트 파일은 이 모델을 바탕으로 만들어졌습니다. `peerDependencies` 범위에 이를 선언해 두었으므로, 오래된 pi에서는 설치 시 npm이 경고합니다.
+pi **1.1.0 이상**이 필요합니다. pi 0.86과 0.87에서 시스템 프롬프트와 대화 기록이 세션 트랜스크립트로 옮겨졌고, 에이전트 트랜스크립트 저장과 저장된 세션 재개는 이 구조를 사용합니다. `peerDependencies` 범위에 이를 선언해 두었으므로, 오래된 pi에서는 설치 시 npm이 경고합니다.
 
 ### 기타 호스트
 
@@ -116,7 +115,7 @@ extensions: false
 Review code without making changes. Cite file paths and explain each finding.
 ```
 
-해당 프로젝트에서 pi를 시작합니다. 메인 에이전트에 `reviewer`를 실행해 달라고 하거나 TUI에 `@reviewer Find all files that handle authentication`을 입력합니다. 메인 에이전트는 `Agent` 도구로 이 역할을 실행할 수 있습니다.
+해당 프로젝트에서 pi를 시작합니다. 메인 에이전트에 `reviewer`를 실행해 달라고 요청합니다. 메인 에이전트는 `Agent` 도구로 이 역할을 실행할 수 있습니다.
 
 ```typescript
 Agent({
@@ -179,7 +178,7 @@ pi -p "Use the reviewer agent to find files that handle authentication"
 
 이 번역은 일부만 다룹니다. 여기에 없는 모든 세부 사항은 [영어 README 전체](README.md)를 참고하세요.
 
-- [UI](README.md#ui): FleetView, 전체 화면 대화 뷰어, 에이전트 멘션
+- [UI](README.md#ui): FleetView, 전체 화면 대화 뷰어
 - [사용자 정의 에이전트](README.md#custom-agents): frontmatter 필드, 도구 및 확장 범위
 - [도구](README.md#tools): `Agent`, `get_subagent_result`, `steer_subagent` 매개변수 표
 - [영구 설정](README.md#persistent-settings): 모든 설정과 기본값

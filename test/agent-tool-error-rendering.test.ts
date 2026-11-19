@@ -61,3 +61,30 @@ describe("Agent tool invocation error rendering", () => {
     expect(output).not.toContain("Aborted (max turns exceeded)");
   });
 });
+
+describe("Agent tool result rendering for saved receipts", () => {
+  it("shows the saved result text for a completed agent", () => {
+    const output = render(agentTool(), {
+      content: [{ type: "text", text: "Saved agent output." }],
+      details: { agentId: "a1", status: "completed" },
+      isError: false,
+    });
+
+    expect(output).toContain("Saved agent output.");
+    expect(output).not.toContain("Running in background");
+  });
+
+  it.each([
+    ["queued", "Queued"],
+    ["running", "Running"],
+  ])("shows the background status line for a %s agent", (status, label) => {
+    const output = render(agentTool(), {
+      content: [{ type: "text", text: "Agent receipt text." }],
+      details: { agentId: "a1", status },
+      isError: false,
+    });
+
+    expect(output).toContain(`${label} in background (ID: a1)`);
+    expect(output).not.toContain("Agent receipt text.");
+  });
+});

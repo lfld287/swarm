@@ -28,12 +28,11 @@ import { type RpcHandle, registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
 import { GroupJoinManager } from "./group-join.js";
 import { isolationParam, resolveAgentInvocationConfig } from "./invocation-config.js";
-import { describeMention, handleBase, isReservedHandle, parseMention, resolveHandleToType, stripAgentPrefix } from "./mention.js";
-import { runMentionClone } from "./mention-clone.js";
 import { describeModel, type ModelRegistry, resolveModel } from "./model-resolver.js";
 import { checkModelScope, isScopeModelsEnabled, setScopeModelsEnabled } from "./model-scope.js";
 import { createOutputFilePath, ensureOutputFile, getOutputTranscriptDefault, setOutputTranscriptDefault, streamToOutputFile, writeInitialEntry } from "./output-file.js";
 import { getPackageAgentsGate, invalidatePackageCache, seedProjectTrust, setPackageAgentsGate, setProjectTrusted } from "./package-resources.js";
+import { describePrompt } from "./prompts.js";
 import { SubagentScheduler } from "./schedule.js";
 import { resolveStorePath, ScheduleStore } from "./schedule-store.js";
 import {
@@ -54,8 +53,7 @@ import {
 } from "./settings.js";
 import { getStatusNote, partialOutputSuffix } from "./status-note.js";
 import { toSubagentInfo } from "./subagent-info.js";
-import { type AgentInvocation, type AgentMentionMode, type AgentRecord, type CacheRetentionSetting, type JoinMode, type NotificationDetails, type SubagentType, THINKING_LEVELS, type ViewerMarkdownMode, type WidgetMode } from "./types.js";
-import { createMentionProvider, mentionRoster, type TypeInfo } from "./ui/agent-mention.js";
+import { type AgentInvocation, type AgentRecord, type CacheRetentionSetting, type JoinMode, type NotificationDetails, type SubagentType, THINKING_LEVELS, type ViewerMarkdownMode, type WidgetMode } from "./types.js";
 import {
   type AgentActivity,
   AgentWidget,
@@ -504,72 +502,51 @@ export default function (pi: ExtensionAPI) {
   // session's entry. The first activation (the root session) wins; child
   // activations leave it alone.
   const MANAGER_KEY = Symbol.for("pi-subagents:manager");
-  /**
-   * Resolve the agent type and spawn. Trusts its options — every caller must
-   * either be in-process or have gone through `spawnTopLevel` first.
-   */
-  const spawnResolved = (piRef: any, ctxRef: any, type: string, prompt: string, options: any) => {
+  const spawnTopLevel = (piRef: any, ctxRef: any, type: string, prompt: string, options: any) => {
+    const safeOptions = { ...(options ?? {}) };
+    if (safeOptions.description == null && typeof prompt === "string") safeOptions.description = describePrompt(prompt);
+    delete safeOptions.configCwd;
+    // Also internal: it names a transcript directory, so a forged value would
+    // be a path-traversal primitive.
+    delete safeOptions.rootSessionId;
+    // Only an internal resume may reopen a session file the extension recorded.
+    delete safeOptions.resumeSessionFile;
+    // Bypasses handle allocation: a forged value could duplicate a live agent's name.
+    delete safeOptions.reclaim;
+    // Queue bypass is reserved for the scheduler, not public callers.
+    delete safeOptions.bypassQueue;
+
     // Cross-extension callers get the same dispatch contract as the LLM (#183).
-    // The RPC layer already throws for an unresolvable model rather than falling
-    // back silently; a bad agent type should not be quieter. Throws become error
-    // envelopes at the RPC boundary. Reload first so an agent file added mid
-    // session is spawnable here too, not only through the Agent tool.
-    // A saved-session reopen has just reloaded and strictly resolved its own
-    // role via reopenTarget. Do not re-resolve it using dispatch fallback.
-    if (options?.resumeSessionFile === undefined) {
-      reloadCustomAgents();
-      const dispatch = resolveSpawnType(type);
-      if (!dispatch.ok) throw new Error(dispatch.message);
-      type = dispatch.type;
-    }
-    // Every programmatic spawn lands here — cross-extension RPC, both `@handle`
-    // mention paths, and the `Symbol.for("pi-subagents:manager")` registry — and
-    // none came through the Agent tool, which is where the UI activity tracker is
-    // otherwise created. Without one the widget and FleetView have no tool name
-    // and no turn count, so the row reads `thinking…` for the agent's whole life
+    // A bad agent type throws and becomes an error envelope at the RPC boundary.
+    // Reload so agent files added mid-session are spawnable here too.
+    reloadCustomAgents();
+    const dispatch = resolveSpawnType(type);
+    if (!dispatch.ok) throw new Error(dispatch.message);
+    type = dispatch.type;
+
+    // RPC and registry spawns don't go through the Agent tool, which otherwise
+    // creates the UI activity tracker. Without one the widget and FleetView have
+    // no tool name or turn count, so the row reads `thinking…` for the agent's whole life
     // while the header's tool-use count climbs beside it (#181). Double-tracking
     // is not possible: the Agent tool calls `manager.spawn` directly. The tracker
     // callbacks are the funnel's own — a caller's are not honoured, since a
     // half-wired tracker renders worse than none.
     //
-    // The turn limit is resolved rather than read off `options`, which a mention
-    // spawn deliberately omits so the agent's own config can decide: a tracker
-    // built with `undefined` renders `↻3` where the Agent tool renders `↻3≤20`.
+    // Resolve the turn limit in case the caller omitted it: a tracker built
+    // with `undefined` renders `↻3` where the Agent tool renders `↻3≤20`.
     // Like the tool's own, it is a prediction — editing the agent file mid-run
     // leaves the displayed ceiling stale.
-    const { state, callbacks } = createActivityTracker(resolveEffectiveMaxTurns(type, options?.maxTurns));
+    const { state, callbacks } = createActivityTracker(resolveEffectiveMaxTurns(type, safeOptions.maxTurns));
     // Repaints are left to the manager's `onStart` callback, which already starts
     // the widget/fleet timers for agents that enter this way.
-    const id = manager.spawn(piRef, ctxRef, type, prompt, { ...options, ...callbacks });
+    const id = manager.spawn(piRef, ctxRef, type, prompt, { ...safeOptions, ...callbacks });
     agentActivity.set(id, state);
     return id;
   };
 
-  const spawnTopLevel = (piRef: any, ctxRef: any, type: string, prompt: string, options: any) => {
-    const safeOptions = { ...(options ?? {}) };
-    if (safeOptions.description == null && typeof prompt === "string") safeOptions.description = describeMention(prompt);
-    delete safeOptions.configCwd;
-    // Also internal: it names a transcript directory, so a forged value would
-    // be a path-traversal primitive.
-    delete safeOptions.rootSessionId;
-    // Worse than rootSessionId: this one names a file to OPEN and replay as a
-    // conversation. Only the mention dispatcher may set it, and only from a
-    // path this extension itself recorded — never from anything a caller sent.
-    delete safeOptions.resumeSessionFile;
-    // Bypasses handle allocation, so a forged value would duplicate a live
-    // agent's name and make `@handle` ambiguous. Same rule: dispatcher only.
-    delete safeOptions.reclaim;
-    // Queue bypass is reserved for the scheduler, not public callers.
-    delete safeOptions.bypassQueue;
-    return spawnResolved(piRef, ctxRef, type, prompt, safeOptions);
-  };
-
   /**
-   * Resolve a tool's `agent_id` as an id OR a handle, so the model addresses
-   * agents by the same names the user types. Ids are tried first, keeping the
-   * existing behaviour exact — a handle is only consulted when the string is
-   * not an id at all. Only live records: a tombstone has nothing to steer and
-   * no result to read.
+   * Resolve a tool's `agent_id` as an id, handle, or alias. Try exact ids first.
+   * Only live records: a tombstone has nothing to steer and no result to read.
    */
   const resolveAgentRef = (ref: string): AgentRecord | undefined => {
     const byId = manager.getRecord(ref);
@@ -612,8 +589,6 @@ export default function (pi: ExtensionAPI) {
   // (currentCtx would stay undefined → spawn always "No active session"). Gating
   // here makes a filtered session behave like an absent one (#142).
   let rpcHandle: RpcHandle | undefined;
-  /** Whether the `@handle` autocomplete wrapper has been stacked on pi's provider. */
-  let mentionProviderRegistered = false;
 
   // ---- Subagent scheduler ----
   // Session-scoped: store is constructed inside session_start once sessionId
@@ -698,236 +673,6 @@ export default function (pi: ExtensionAPI) {
       pi.events.emit("subagents:ready", {});
     }
     if (isSchedulingEnabled() && !scheduler.isActive()) startScheduler(ctx);
-    // Stack `@handle` suggestions on pi's built-in autocomplete. Registered at
-    // most once per activation: pi appends wrappers to a list it never prunes,
-    // so a second call would layer a duplicate provider on the first. TUI only
-    // — print mode has no such method, and RPC mode's is a no-op.
-    if (ctx.mode === "tui" && !mentionProviderRegistered) {
-      mentionProviderRegistered = true;
-      ctx.ui.addAutocompleteProvider(current =>
-        createMentionProvider(
-          current,
-          // Plain text, not renderAgentName: the same label FleetView and the
-          // widget show, but the autocomplete description cannot carry ANSI.
-          () => mentionRoster(manager, mentionTypes(), getDisplayName),
-          isAgentMentionsEnabled,
-        ),
-      );
-    }
-  });
-
-  // Start a mentioned agent the direct way. runAgent resolves model, thinking,
-  // max turns and `isolated` from the agent's own config when the spawn omits
-  // them, but not `inherit_context`: an RPC caller decides that one itself. A
-  // mention is the user starting the agent from this session, so the file does —
-  // reloaded first, as the spawn reloads it, so a mid-session edit is not missed.
-  const startMentioned = (ctx: ExtensionContext, type: string, message: string) => {
-    reloadCustomAgents();
-    return spawnTopLevel(pi, ctx, type, message, {
-      description: describeMention(message),
-      inheritContext: getAgentConfig(type)?.inheritContext,
-    });
-  };
-
-  /** Agent types `@` can start, in the shape the roster wants. */
-  const mentionTypes = (): TypeInfo[] =>
-    getAvailableTypes().map(name => ({ name, description: getAgentConfig(name)?.description ?? name }));
-
-  /**
-   * `@handle message` typed at the prompt addresses that agent instead of the
-   * main model — Claude Code's prompt mention, same grammar (see mention.ts).
-   *
-   * The handle names the *agent*, not one process, so one syntax covers its
-   * whole lifecycle: message it while it runs, resume it once it has finished,
-   * start it if it never ran. Everything that isn't an agent mention falls
-   * through untouched, which is what keeps `@src/foo.ts summarize this`, a bare
-   * `@handle`, and ordinary prose working. A delivered mention costs no
-   * main-model turn; the answer arrives through the ordinary completion
-   * notification either way.
-   */
-  pi.on("input", async (event, ctx) => {
-    // Never hijack text the extension layer itself submitted (pi.sendMessage,
-    // scheduled prompts) — only something a person typed can be a mention.
-    if (event.source === "extension" || !isAgentMentionsEnabled()) return { action: "continue" };
-    // Claiming the turn is TUI only, matching the `@` completion that teaches
-    // the syntax. Pi defaults `session.prompt()` to source "interactive", so a
-    // headless `pi -p "@explore …"` reaches here too — and claiming it would
-    // answer with silence, which the background hold cannot fix: `handled`
-    // returns from prompt() before any turn starts, so the loop that patch wraps
-    // never runs (it holds subagents spawned by the Agent tool MID-turn, a
-    // different path). The agent would detach, `ctx.ui.notify` is a no-op
-    // outside the TUI, and print mode would exit having printed nothing.
-    //
-    // `model` mode has none of that problem: it queues a reminder and lets the
-    // turn run, so the answer is the model's own, printed as usual. It is the
-    // only branch allowed to act headlessly; everything else falls through to
-    // the main model exactly as it did before mentions existed.
-    const canDispatchDirectly = ctx.mode === "tui";
-    if (!canDispatchDirectly && getAgentMentionMode() !== "model") return { action: "continue" };
-
-    const mention = parseMention(event.text);
-    if (!mention) return { action: "continue" };
-
-    // `@main` addresses the main conversation, never a subagent — the one name
-    // `assignHandle` refuses to allocate. An explicit escape hatch for text
-    // that would otherwise read as a mention, so the prefix is dropped and the
-    // rest goes to the model with its attachments intact.
-    if (isReservedHandle(mention.handle)) {
-      return { action: "transform", text: mention.message, ...(event.images && { images: event.images }) };
-    }
-
-    // As typed first, so an agent actually called `agent-foo` wins over Claude
-    // Code's `@agent-` + `foo` spelling rather than being shadowed by it.
-    const alias = stripAgentPrefix(mention.handle);
-    const resolved = manager.resolveMention(mention.handle)
-      ?? (alias ? manager.resolveMention(alias) : undefined);
-
-    // Steering and resuming are direct in every mode, so headless they are not
-    // available at all. Falling through here rather than dropping to the start
-    // path below matters: the handle names an agent that already exists, and
-    // asking the model to start another one is not what was typed.
-    if (resolved && !canDispatchDirectly) return { action: "continue" };
-
-    if (resolved?.kind === "live") {
-      const record = resolved.record;
-      const target = `@${record.alias ?? record.handle ?? mention.handle}`;
-
-      if (record.status === "running" || record.status === "queued") {
-        // Steering interrupts after the current tool call, exactly like the
-        // steer_subagent tool. Un-consume the result so the agent's reply to
-        // this message is still relayed even if the LLM read its last answer.
-        record.resultConsumed = false;
-        manager.steer(record.id, mention.message);
-        ctx.ui.notify(`Sent to ${target}`, "info");
-        return { action: "handled" };
-      }
-
-      if (record.session) {
-        // Both derived from the record's OWN type: a mention names an existing
-        // agent, so its frontmatter is what governs — `output_transcript: false`
-        // must keep holding, since record.outputFile is the sole gate every
-        // downstream consumer keys off and a resume must not re-open it.
-        const resumedRecord = startBackgroundResume(ctx, record, mention.message, {
-          outputTranscript: getAgentConfig(record.type)?.outputTranscript ?? getOutputTranscriptDefault(),
-          maxTurns: resumeTurnLimit(record),
-        });
-        ctx.ui.notify(
-          resumedRecord ? `Resuming ${target}` : `Could not resume ${target} — it is still running.`,
-          resumedRecord ? "info" : "warning",
-        );
-        return { action: "handled" };
-      }
-      // A live record with no session never got far enough to continue, so it
-      // falls through to the start-fresh path below, like Claude's
-      // `no_transcript`.
-    }
-
-    // Evicted, but its conversation is still on disk: reopen it. This is an
-    // ordinary spawn carrying a session file, so the new record picks up the
-    // widget, fleet row, transcript and completion notification unchanged —
-    // and `reclaim` hands it back the names the tombstone was holding.
-    const retry = resolved?.kind === "live" ? manager.failedReopen(resolved.record.id) : undefined;
-    const entry = retry ? agentRecordEntryData(retry) : resolved?.kind === "tombstone" ? resolved.entry : undefined;
-    if (entry) {
-      const target = `@${entry.alias ?? entry.handle ?? mention.handle}`;
-
-      reloadCustomAgents();
-      const reopen = reopenTarget(entry.type, entry.sessionFile, entry.worktreeLost);
-      if (!reopen.ok) {
-        // A session that is gone can only ever fail, so its row goes with it;
-        // an unavailable agent stays, since re-enabling it makes the handle
-        // work again.
-        if (reopen.gone && entry.handle) manager.dropTombstone(entry.handle);
-        ctx.ui.notify(`Could not resume ${target} — ${reopen.reason}.`, "warning");
-        return { action: "handled" };
-      }
-
-      try {
-        // spawnResolved, not spawnTopLevel: the latter strips
-        // `resumeSessionFile` and `reclaim` as untrusted. This path is the
-        // exception — both come from a tombstone this extension wrote.
-        spawnResolved(pi, ctx, reopen.type, mention.message, {
-          description: entry.description,
-          reclaim: { id: retry?.id, handle: entry.handle, alias: entry.alias },
-          resumeSessionFile: reopen.sessionFile,
-        });
-        // The tombstone deliberately stays. `resolveMention` prefers the live
-        // record holding these same names, so it cannot shadow the resume — and
-        // if this run dies before establishing its own session, the original
-        // transcript is still the right thing for the next mention to reopen.
-        // Once the resumed record is evicted it overwrites this entry in place,
-        // keyed by the same handle, so nothing accumulates.
-        ctx.ui.notify(`Resuming ${target}`, "info");
-      } catch (err) {
-        // The type is already settled above, so what is left is a spawn-time
-        // failure such as an unusable cwd.
-        ctx.ui.notify(
-          `Could not resume ${target}: ${err instanceof Error ? err.message : String(err)}`,
-          "warning",
-        );
-      }
-      return { action: "handled" };
-    }
-
-    // No agent under that handle — but the name may still be an agent type, in
-    // which case the mention starts one.
-    const typeHandle = mention.handle;
-    const type = resolveHandleToType(typeHandle, getAvailableTypes())
-      ?? (alias ? resolveHandleToType(alias, getAvailableTypes()) : undefined);
-    if (!type) return { action: "continue" };
-
-    // Claude Code never starts the agent itself: `@agent-<type>` becomes an
-    // attachment asking the main model to do it, and the model writes the
-    // agent's prompt from the conversation rather than forwarding the typed
-    // text. That buys a real `Agent` tool call — transcript, per-tool widget
-    // detail, tool-use-id correlation, join grouping — and a prompt with the
-    // context a cold spawn lacks.
-    //
-    // It also costs a visible turn, spent narrating a decision the user already
-    // made by typing the handle. So the turn is taken by a clone of this
-    // conversation instead (mention-clone.ts): same messages, same system
-    // prompt, off-screen, holding only the `Agent` tool. Nothing reaches the
-    // chat, and what it starts is an ordinary top-level agent.
-    if (getAgentMentionMode() === "model") {
-      const label = `@${handleBase(type)}`;
-      // "Prompting", not "Starting": in this mode nothing starts until the
-      // off-screen clone has taken a whole model turn writing the agent's
-      // prompt, and that wait is the one thing the chat cannot show. `direct`
-      // says "Started" because by then it has. The distinction tells the user
-      // which of the two they are waiting on.
-      ctx.ui.notify(`Prompting ${label}…`, "info");
-      // Not awaited: the clone runs a full model turn, and prompt() is blocked
-      // until this hook returns. The user gets their prompt back immediately
-      // and the agent appears in the widget when it starts.
-      void runMentionClone({ ctx, type, message: mention.message, agentTool: registeredAgentTool })
-        .then((result) => {
-          if (result.spawned) return;
-          // A clone that could not run must not swallow the mention: start the
-          // agent the direct way rather than leaving the user with a toast and
-          // nothing running.
-          try {
-            startMentioned(ctx, type, mention.message);
-            ctx.ui.notify(`Started ${label} directly — ${result.error}`, "warning");
-          } catch (err) {
-            ctx.ui.notify(
-              `Could not start ${label}: ${err instanceof Error ? err.message : String(err)}`,
-              "error",
-            );
-          }
-        });
-      return { action: "handled" };
-    }
-
-    try {
-      // The manager's onStart/onComplete callbacks own the widget, the fleet list
-      // and the completion notification — the same contract the scheduler and
-      // cross-extension RPC spawns run under.
-      startMentioned(ctx, type, mention.message);
-      ctx.ui.notify(`Started @${handleBase(type)}`, "info");
-    } catch (err) {
-      ctx.ui.notify(`Could not start @${handleBase(type)}: ${err instanceof Error ? err.message : String(err)}`, "error");
-    }
-    return { action: "handled" };
   });
 
   pi.on("session_before_switch", () => {
@@ -1003,18 +748,6 @@ export default function (pi: ExtensionAPI) {
   function isFleetViewEnabled(): boolean { return fleetViewEnabled; }
   function setFleetViewEnabled(b: boolean): void { fleetViewEnabled = b; fleet.setEnabled(b); }
 
-  // Claude Code-style `@handle message` prompt mentions. Read live by both the
-  // `input` hook and the stacked autocomplete provider, so the toggle applies
-  // immediately — the provider itself can never be unregistered (pi's wrapper
-  // list is append-only), it just delegates everything when this is off.
-  let agentMentionMode: AgentMentionMode = "model";
-  function getAgentMentionMode(): AgentMentionMode { return agentMentionMode; }
-  function setAgentMentionMode(mode: AgentMentionMode): void { agentMentionMode = mode; }
-  // `model` and `direct` differ only in who starts a not-yet-running agent, so
-  // everything that just asks "are mentions live at all" — the suggestion list,
-  // the steer and resume branches — reads this instead of the mode.
-  function isAgentMentionsEnabled(): boolean { return agentMentionMode !== "off"; }
-
   // The Agent tool reads the project/global .output transcript default from
   // output-file.ts when spawning a background agent. A custom agent's
   // `output_transcript` frontmatter overrides it per spawn.
@@ -1043,7 +776,7 @@ export default function (pi: ExtensionAPI) {
 
   /** Record a `group`-mode spawn made inside a parent turn. */
   function joinTurnGroup(id: string, joinMode: JoinMode | undefined) {
-    // Outside a parent turn (an `@handle` mention) no turn end is coming, and a
+    // Outside a parent turn no turn end is coming, and a
     // group of one is delivered exactly like a single completion.
     if (joinMode === 'group' && currentCtx?.signal !== undefined) turnGroupSpawns.push(id);
   }
@@ -1087,9 +820,7 @@ export default function (pi: ExtensionAPI) {
    * re-running agent needs: transcript anchoring, activity tracking, join-mode
    * batching, the widget/fleet refresh, and the `subagents:created` event.
    *
-   * Shared by the Agent tool's `resume` branch and the
-   * `@handle message` prompt mention — they differ only in how they report the
-   * outcome. Returns the record, or undefined when the manager refused because
+   * Returns the record, or undefined when the manager refused because
    * the agent is still running (see AgentManager.resume).
    *
    * Callers must have already established that the record has a session.
@@ -1103,10 +834,8 @@ export default function (pi: ExtensionAPI) {
     const id = existing.id;
     if (existing.status === "running" || existing.status === "queued" || manager.isSettling(id)) return undefined;
     const joinMode = defaultJoinMode;
-    // Assigned unconditionally: the completion notification carries this as
-    // `<tool-use-id>`, so a mention-resume (which passes none) has to CLEAR the
-    // id left by the spawn that created the record. Keeping it would point the
-    // orchestrator's new result at a tool call that was answered runs ago.
+    // Use only this call's id in the completion notification, never one left
+    // over from a previous run.
     existing.toolCallId = opts.toolCallId;
     existing.joinMode = joinMode;
     // Reuse the agent's transcript rather than starting a fresh one: the
@@ -1203,7 +932,6 @@ export default function (pi: ExtensionAPI) {
     setStrictAgentFiles: (b) => { strictAgentFiles = b; },
     setToolDescriptionMode: setToolDescriptionMode,
     setFleetView: setFleetViewEnabled,
-    setAgentMentions: setAgentMentionMode,
     setRememberAgents,
     setCacheRetention,
     setWidgetMode: setWidgetMode,
@@ -1362,9 +1090,6 @@ Terse command-style prompts produce shallow, generic work.
     return fullAgentToolDescription;
   })();
 
-  // Held rather than registered inline: the mention clone reuses this exact
-  // definition, so the agent it starts is an ordinary top-level spawn instead
-  // of a second implementation that has to be kept in step with this one.
   const agentTool = defineTool({
     name: SUBAGENT_TOOL_NAMES.AGENT,
     label: "Agent",
@@ -1386,7 +1111,7 @@ Terse command-style prompts produce shallow, generic work.
       name: Type.Optional(
         Type.String({
           description:
-            'Optional memorable name for this agent, e.g. "auth-audit", so it can be addressed as `@name` at the prompt and by steer_subagent / get_subagent_result. Letters, digits, `_` and `-`. Worth setting when several agents of the same type run at once; omit for one-off work. The agent stays reachable by its type either way.',
+            'Optional memorable name for this agent, e.g. "auth-audit", accepted by steer_subagent / get_subagent_result. Letters, digits, `_` and `-`. Worth setting when several agents of the same type run at once; omit for one-off work. The agent stays reachable by its type either way.',
         }),
       ),
       subagent_type: Type.String({
@@ -1454,7 +1179,9 @@ Terse command-style prompts produce shallow, generic work.
     renderResult(result, _options, theme, renderContext) {
       const details = result.details as AgentReceipt | undefined;
       const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-      if (renderContext.isError || !details?.agentId) return new Text(text, 0, 0);
+      if (renderContext.isError || !details?.agentId || (details.status !== "queued" && details.status !== "running")) {
+        return new Text(text, 0, 0);
+      }
       const status = details.status === "queued" ? "Queued" : "Running";
       return new Text(theme.fg("dim", `  ⎿  ${status} in background (ID: ${details.agentId})`), 0, 0);
     },
@@ -1474,8 +1201,7 @@ Terse command-style prompts produce shallow, generic work.
       // A resume whose record is gone — evicted ten minutes after it finished,
       // or lost to a reload or restart — reopens the agent from the session's
       // saved record of it, under the same id, as Claude Code resumes from the
-      // transcript on disk. This is an ordinary spawn carrying a session file,
-      // like the `@handle` path's, so it runs through the spawn path below
+      // transcript on disk. It runs through the spawn path below
       // and picks up the widget, fleet row, transcript, join batching and
       // completion notification unchanged. Only the prompt and turn budget
       // carry over from the call: like a live resume, it
@@ -1749,11 +1475,8 @@ Terse command-style prompts produce shallow, generic work.
    * folds it into `getSessionStats()`, which is what the footer, the statusline
    * and `/cost` read — so this is the whole of "report usage to the parent".
    *
-   * Nothing is attached to a call with no tool-call id. That is the `@handle`
-   * mention path (`mention-clone.ts`), which invokes this tool from a fork of the
-   * conversation that is discarded moments later: the result never becomes a
-   * message in the real session, so usage hung on it would be spend the user paid
-   * for and nobody counted. Skipping leaves it pending for the next real result.
+   * Calls without a tool-call id leave usage pending for the next result that
+   * can be persisted in the parent session.
    */
   function withUsageReporting<T extends { execute: (...args: any[]) => any }>(tool: T): T {
     return {
@@ -1770,10 +1493,7 @@ Terse command-style prompts produce shallow, generic work.
     pi.registerTool(withUsageReporting(tool));
   }
 
-  // The mention path is handed THIS object, not the bare `agentTool` — see the
-  // mention-clone header on why the clone must call the registered tool.
-  const registeredAgentTool = withUsageReporting(agentTool);
-  pi.registerTool(registeredAgentTool);
+  registerToolReportingUsage(agentTool);
 
   // ---- get_subagent_result tool ----
 
@@ -1991,7 +1711,6 @@ Terse command-style prompts produce shallow, generic work.
       strictAgentFiles,
       toolDescriptionMode: getToolDescriptionMode(),
       fleetView: isFleetViewEnabled(),
-      agentMentions: getAgentMentionMode(),
       rememberAgents: getRememberAgents(),
       cacheRetention: getCacheRetention(),
       widgetMode: getWidgetMode(),
@@ -2165,16 +1884,9 @@ Terse command-style prompts produce shallow, generic work.
           values: ["on", "off"],
         },
         {
-          id: "agentMentions",
-          label: "Agent mentions",
-          description: "Route `@handle message` at the prompt to that agent. model = an off-screen clone of this conversation calls the Agent tool, so the agent gets a context-written prompt, a transcript and per-tool detail, and the chat stays clean; direct = started here from your text, no model call. Messaging and resuming are direct either way.",
-          currentValue: getAgentMentionMode(),
-          values: ["model", "direct", "off"],
-        },
-        {
           id: "rememberAgents",
           label: "Remember agents",
-          description: "Persist subagent sessions so `@handle` can resume one long after it finished (they also appear in /resume)",
+          description: "Persist subagent sessions so Agent can resume them after eviction (they also appear in /resume)",
           currentValue: getRememberAgents() ? "on" : "off",
           values: ["on", "off"],
         },
@@ -2381,18 +2093,6 @@ Terse command-style prompts produce shallow, generic work.
         const enabled = value === "on";
         setFleetViewEnabled(enabled);
         notifyApplied(ctx, target, `Fleet view ${enabled ? "enabled" : "disabled"}`);
-      } else if (id === "agentMentions") {
-        const mode = value as AgentMentionMode;
-        setAgentMentionMode(mode);
-        notifyApplied(
-          ctx,
-          target,
-          mode === "off"
-            ? "Agent mentions disabled"
-            : mode === "model"
-              ? "Agent mentions on — a conversation clone starts a mentioned agent off-screen"
-              : "Agent mentions on — a mentioned agent starts here, with no model call",
-        );
       } else if (id === "rememberAgents") {
         const enabled = value === "on";
         setRememberAgents(enabled);

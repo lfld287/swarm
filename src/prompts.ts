@@ -4,6 +4,15 @@
 
 import type { AgentConfig, EnvInfo } from "./types.js";
 
+/**
+ * Provide a short default description for a spawn that has no explicit label:
+ * take the first line, collapse whitespace, and clip it for agent displays.
+ */
+export function describePrompt(message: string): string {
+  const oneLine = message.split("\n", 1)[0].replace(/\s+/g, " ").trim();
+  return oneLine.length > 40 ? `${oneLine.slice(0, 39).trimEnd()}…` : oneLine;
+}
+
 /** Extra sections to inject into the system prompt (memory, skills, etc.). */
 export interface PromptExtras {
   /** Persistent memory content to inject (first 200 lines of MEMORY.md + instructions). */
@@ -136,23 +145,6 @@ export function inheritableParentPrompt(rendered: string, cwd: string): string {
   if (!head.endsWith("\n</skills>")) return head;
   const skillsAt = head.lastIndexOf("\n\n<skills>\n");
   return skillsAt < 0 ? head : head.slice(0, skillsAt);
-}
-
-/**
- * The parent's rendered system prompt without its `cwd` section, for a session that
- * renders its own `cwd` after the prompt it is given and adds nothing else.
- *
- * Everything else is kept, including sections after `cwd` (extension sections present
- * while the parent's turn runs). A prompt without the section (for example, a forced
- * prompt) is returned unchanged.
- *
- * @param rendered  The parent's `ctx.getSystemPrompt()`.
- * @param cwd  The cwd the parent's prompt was rendered with.
- */
-export function withoutCwdSection(rendered: string, cwd: string): string {
-  const section = cwdSection(cwd);
-  const at = rendered.lastIndexOf(section);
-  return at < 0 ? rendered : rendered.slice(0, at) + rendered.slice(at + section.length);
 }
 
 /** The `cwd` section as pi renders it after the preceding section. */

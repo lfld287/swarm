@@ -127,7 +127,6 @@ export function makeActivity(records: { id: string; toolUses: number }[]): Map<s
 export function makeManager(records: unknown[]) {
   return {
     listAgents: () => records,
-    listTombstones: () => [],
     getRecord: (id: string) => records.find(r => (r as { id: string }).id === id),
     getMaxConcurrent: () => 4,
   } as any;

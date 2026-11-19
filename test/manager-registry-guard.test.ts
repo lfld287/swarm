@@ -156,7 +156,7 @@ describe("the registry spawn strips internal capabilities", () => {
 
   it("refuses a forged reclaim and allocates a handle the ordinary way", async () => {
     // reclaim bypasses assignHandle, so a forged value could duplicate a live
-    // agent's name and make `@handle` resolve to either of two records.
+    // agent's name and make handle resolution ambiguous.
     const { entry, id, root } = forge({ reclaim: { handle: "explore", alias: "auth-audit" } });
 
     expect(entry.getRecord(id)).toMatchObject({ handle: "worker", alias: undefined });

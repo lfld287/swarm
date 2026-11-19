@@ -62,7 +62,6 @@ https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
 - **对话查看器**：在 `/agents` 中选择任意代理，即可打开实时滚动的浮层，显示其完整对话（自动跟随新内容，向上滚动即暂停）。在 pi 的全屏模式下，它是一个无边框、占满整个终端、支持鼠标的查看器。按 `Enter` 打开输入框，输入内容后再按 `Enter` 发送，即可内联引导正在运行的代理（`Esc` 或提交空内容则返回）。这条消息会作为用户消息显示，并在代理当前的工具调用结束后调整其工作方向。按 `x`（再按一次 `x` 确认）可停止仍在运行的代理。工具调用的显示方式与 pi 自身的对话记录一致，使用代理会话中注册的渲染器：bash 调用显示命令和输出，`read` 显示行号，`edit` 显示 diff，扩展工具使用自己的渲染器，没有渲染器的工具则回退为显示参数和截断后的输出预览。`ctrl+o`（或 `app.tools.expand` 绑定的任意按键）可展开被折叠的工具输出。助手文本以 Markdown 渲染；按 `m` 可在关闭、仅助手、全部三种模式之间循环切换（参见 [Viewer markdown](README.md#persistent-settings)）
 - **自定义代理类型**：在 `.pi/agents/<name>.md` 或 `.agents/agents/<name>.md`（项目级）或全局位置定义代理，使用 YAML frontmatter：自定义系统提示词、模型选择、思考级别、工具限制，以及兼容 Claude Code 的彩色名称徽标
 - **随包分发的代理**：pi 包可以在其 `package.json` 中用 `"pi": { "subagents": { "agents": ["./agents"] } }` 声明自己的 `.md` 代理，这样只需 `pi install` 即可完成全部配置：无需在每台机器或每次容器启动时把文件复制到 `.pi/agents/`。只读取 pi 实际安装的包（绝不读取 `node_modules`），包中定义的代理优先级低于你自己编写的所有代理，`/agents` 以只读方式显示它们，并提供 Eject 和 Disable。用 `packageAgents` 缩小范围或关闭此功能。**[完整指南](https://github.com/lfld287/swarm/blob/main/docs/packages.md)**
-- **代理提及**：子代理是一等公民：在提示符中输入 `@reviewer also check the RPC path`，这段话会发给该代理而不是主模型，且不会有任何内容进入聊天。同一种语法覆盖整个生命周期：在它运行时给它发消息，在它完成后恢复它，很久以后再从磁盘重新打开它的会话，或者在它从未运行过时启动它。提及一个未在运行的代理时，会通过一个不在界面上显示的克隆对话来启动它，因此它能获得 Claude Code 那种根据上下文编写的提示词和一次真正的 `Agent` 工具调用，同样不会有任何内容进入聊天；`direct` 模式则直接用你的文本启动它，完全不调用模型。编排者可以给代理设置 `name`，这样你就能用 `@auth-audit` 指代它，`steer_subagent`/`get_subagent_result` 也接受这类名称。`@` 会与 pi 的文件补全一起补全正在运行的代理、可恢复的代理和可启动的类型；`@main` 强制把文本发回主模型。通过 `/agents → Settings → Agent mentions` 开关
 - **运行中引导**：向正在运行的代理注入消息，无需重启即可改变其工作方向
 - **会话恢复**：从代理停下的地方继续，保留对话上下文。受理时返回同一个代理 ID，完成时与新启动的代理一样发送通知
 - **轮次上限时优雅收尾**：代理在被强制中止前会收到“收尾”警告，从而产出干净、可用的部分结果，而不是被截断的输出
@@ -91,7 +90,7 @@ pi install git:github.com/lfld287/swarm
 pi -e ./src/index.ts
 ```
 
-需要 pi **1.1.0 或更高版本**：pi 0.86 和 0.87 把系统提示词和对话历史移入了会话记录（session transcript），而 `@handle` 对话克隆和代理对话记录文件都建立在这一模型之上。`peerDependencies` 范围中声明了这一要求，因此安装时 npm 会对较旧的 pi 发出警告。
+需要 pi **1.1.0 或更高版本**：pi 0.86 和 0.87 把系统提示词和对话历史移入了会话记录（session transcript），代理对话记录文件和已保存会话的恢复都依赖这一机制。`peerDependencies` 范围中声明了这一要求，因此安装时 npm 会对较旧的 pi 发出警告。
 
 ### 其他宿主
 
@@ -115,7 +114,7 @@ extensions: false
 Review code without making changes. Cite file paths and explain each finding.
 ```
 
-在该项目中启动 pi。请主代理运行 `reviewer`，或在 TUI 中输入 `@reviewer Find all files that handle authentication`。主代理可以用 `Agent` 工具启动该角色：
+在该项目中启动 pi。请主代理运行 `reviewer`。主代理可以用 `Agent` 工具启动该角色：
 
 ```typescript
 Agent({
@@ -178,7 +177,7 @@ pi -p "Use the reviewer agent to find files that handle authentication"
 
 本文仅为部分翻译；未涵盖的内容请参阅[完整英文 README](README.md)。
 
-- [UI](README.md#ui)：FleetView、全屏对话查看器、代理提及
+- [UI](README.md#ui)：FleetView、全屏对话查看器
 - [自定义代理](README.md#custom-agents)：frontmatter 字段、工具与扩展范围
 - [工具](README.md#tools)：`Agent`、`get_subagent_result`、`steer_subagent` 的参数表
 - [持久化设置](README.md#persistent-settings)：所有设置项及其默认值

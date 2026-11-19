@@ -332,13 +332,13 @@ describe("`group` join mode — one notification per turn's batch", () => {
     vi.useFakeTimers();
     const runs = controllableRuns();
     const b = await boot({ defaultJoinMode: "group" });
-    b.parent.running = false; // e.g. an `@handle` mention's off-screen spawn
-    await spawn(b, b.parentCtx, "mentioned");
+    b.parent.running = false;
+    await spawn(b, b.parentCtx, "outside-turn");
 
-    runs.settle("mentioned");
+    runs.settle("outside-turn");
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(sentContents(b)).toEqual([expect.stringContaining("mentioned done")]);
+    expect(sentContents(b)).toEqual([expect.stringContaining("outside-turn done")]);
   });
 
   it("groups a late worktree failure with its sibling and reports each once", async () => {

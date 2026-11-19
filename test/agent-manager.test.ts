@@ -1528,7 +1528,7 @@ describe("AgentManager — pendingSteers flush", () => {
     expect(record.pendingSteers).toBeUndefined();
   });
 
-  // The viewers, an @handle and the RPC all steer through the manager and none
+  // The viewers and RPC both steer through the manager and neither
   // of them emits the lifecycle event itself — this callback is the one place
   // `subagents:steered` comes from for every path except the tool.
   it("fires onSteered for a queued and a delivered steer, never for a refused one", async () => {
@@ -2007,10 +2007,8 @@ describe("AgentManager — background resume", () => {
   });
 });
 
-// A `name` on the spawn adds a SECOND handle rather than replacing the
-// type-derived one. That is the property the whole design rests on: if naming
-// freed up `explore`, then `@explore fix it` would quietly start a second
-// Explore alongside the running one instead of reaching it.
+// A `name` on the spawn adds a second handle rather than replacing the
+// type-derived one. Tool lookups by either name reach the same agent.
 describe("AgentManager — names as additive aliases", () => {
   let manager: AgentManager;
 
@@ -2185,8 +2183,7 @@ describe("AgentManager — effective model and thinking write-back", () => {
   });
 
   it("gives a spawn that carried no invocation one to display", async () => {
-    // Cross-extension RPC and `@handle` spawns pass none, and used to render no
-    // metadata at all.
+    // A cross-extension RPC spawn can omit invocation metadata.
     const record = await spawnWithSession(
       undefined,
       { model: { provider: "openai-codex", id: "gpt-5.6-sol" }, thinkingLevel: "xhigh" },
@@ -2221,8 +2218,7 @@ describe("AgentManager — effective model and thinking write-back", () => {
 
 // Frontmatter is authoritative (README "Frontmatter is authoritative"): the
 // agent file's `isolation:` must hold on every spawn path. Only the Agent tool
-// resolves it before calling the manager; `@handle` mentions
-// pass none, and RPC spawns forward only their caller's value.
+// resolves it before calling the manager; RPC spawns forward only their caller's value.
 describe("AgentManager — the agent file's `isolation` wins over the spawn option", () => {
   let manager: AgentManager;
   const wt = { path: "/wt/a", branch: "pi-agent-a", baseSha: "abc", workPath: "/wt/a" };

@@ -46,7 +46,7 @@ Spawns always run in the background and use the shared `maxConcurrent` limit. Th
 | Field | Type | Notes |
 |---|---|---|
 | `description` | string | What the agent is doing. Shown in the widget, FleetView and the completion notification |
-| `name` | string | A memorable second handle (`@auth-audit`). Slugged, never validated — anything unusable degrades rather than failing the spawn |
+| `name` | string | A memorable second handle (`auth-audit`). Slugged, never validated — anything unusable degrades rather than failing the spawn |
 | `model` | `Model` **or** `"provider/modelId"` | Strings are resolved at the RPC boundary against `ctx.modelRegistry`. `null` means inherit, not override. Resolution is fuzzy — see [Model Scope](../README.md#model-scope) |
 | `maxTurns` | number | Turn ceiling for the run |
 | `isolated` | boolean | Strips extensions and skills. Applies only when the agent file leaves `isolated:` unset — frontmatter is authoritative. **Not** a git worktree — see the trap table below |
@@ -71,7 +71,7 @@ Spawns always run in the background and use the shared `maxConcurrent` limit. Th
 | `configCwd` | The config-discovery root is internal; `cwd` changes where tools run without changing the config root |
 | `rootSessionId` | Names a transcript directory, so a forged value is a path-traversal primitive |
 | `resumeSessionFile` | Worse: it names a file to **open and replay** as a conversation. Dispatcher only, and only from a path this extension itself recorded |
-| `reclaim` | Bypasses handle allocation, so a forged value would duplicate a live agent's name and make `@handle` ambiguous |
+| `reclaim` | Bypasses handle allocation; a forged value could collide with a live agent's handle or alias and make lookup ambiguous |
 | `bypassQueue` | Skipping the queue check is reserved for the scheduler |
 
 **Silently overwritten** — `onToolActivity`, `onTextDelta`, `onTurnEnd` and `onSessionCreated` are replaced by the activity tracker's own (`spawnResolved`, `src/index.ts`). Every programmatic spawn passes through one funnel so none can supply half-wired callbacks; a half-wired tracker renders worse than none, which is the bug behind a row that reads `thinking…` for an agent's whole life ([#181](https://github.com/tintinweb/pi-subagents/pull/181)).
