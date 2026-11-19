@@ -53,7 +53,6 @@ async function spawnCompleted(manager: AgentManager, session: any) {
   } as any);
   const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
     description: "test",
-    isBackground: true,
   });
   await manager.getRecord(id)!.promise;
   return id;

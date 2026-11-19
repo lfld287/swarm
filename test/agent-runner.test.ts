@@ -105,12 +105,12 @@ vi.mock("../src/agent-types.js", () => ({
     systemPrompt: "You are Explore.",
     promptMode: "replace",
     inheritContext: false,
-    runInBackground: false,
     isolated: false,
   })),
   getMemoryToolNames: vi.fn(() => []),
   getReadOnlyMemoryToolNames: vi.fn(() => []),
   getToolNamesForType: vi.fn(() => ["read"]),
+  unavailableAgentTypeMessage: (type: string) => `Unavailable type: ${type}`,
 }));
 
 vi.mock("../src/env.js", () => ({
@@ -131,15 +131,6 @@ vi.mock("../src/skill-loader.js", () => ({
   preloadSkills: vi.fn(() => []),
 }));
 
-vi.mock("../src/nested-tools.js", () => ({
-  getMaxSubagentDepth: vi.fn(() => 2),
-  createNestedSubagentTools: vi.fn(() => [
-    { name: "Agent" },
-    { name: "get_subagent_result" },
-    { name: "steer_subagent" },
-  ]),
-}));
-
 import {
   extensionCanonicalName,
   extensionCanonicalNames,
@@ -158,7 +149,7 @@ import {
   setRememberAgents,
 } from "../src/agent-runner.js";
 import { setCacheRetention } from "../src/cache-retention.js";
-import { compileJsonSchema } from "../src/workflow/json-schema.js";
+import { compileJsonSchema } from "../src/json-schema.js";
 
 /** The most recent session built by `createSession` — read by `lastToolsPassed()`. */
 let lastSession: ReturnType<typeof createSession>["session"] | undefined;
@@ -235,9 +226,15 @@ beforeEach(() => {
   settingsManagerGetSessionDir.mockReset();
   settingsManagerGetSessionDir.mockReturnValue(undefined);
   settingsManagerCreate.mockClear();
-  vi.mocked(createNestedSubagentTools).mockClear();
   loaderExtensionsRef.current = { extensions: [], errors: [], runtime: {} };
   lastSession = undefined;
+});
+
+it("refuses an unavailable role before creating a session", async () => {
+  vi.mocked(getConfig).mockReturnValueOnce(undefined);
+  await expect(runAgent(ctx, "missing-role", "go", { pi })).rejects.toThrow("Unavailable type: missing-role");
+  expect(createAgentSession).not.toHaveBeenCalled();
+  expect(defaultResourceLoaderCtor).not.toHaveBeenCalled();
 });
 
 describe("agent-runner final output capture", () => {
@@ -352,31 +349,6 @@ describe("agent-runner final output capture", () => {
 
     await runAgent(ctx, "Explore", "Say ISOLATED", { pi });
     expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).not.toHaveProperty("worktreeBase");
-  });
-
-  it("marks a workflow child so its prompt says the final text is the return value", async () => {
-    const { buildAgentPrompt } = await import("../src/prompts.js");
-    const { session } = createSession("RAW");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "Explore", "List the files", { pi, workflow: true });
-    expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).toMatchObject({ workflowChild: true });
-
-    await runAgent(ctx, "Explore", "List the files", { pi });
-    expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).not.toHaveProperty("workflowChild");
-  });
-
-  it("leaves the block off a schema-bearing child, which answers through StructuredOutput", async () => {
-    const { buildAgentPrompt } = await import("../src/prompts.js");
-    const { session } = createSession("RAW");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "Explore", "List the files", {
-      pi,
-      workflow: true,
-      structuredOutput: { schema: { type: "object" }, check: () => true },
-    });
-    expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).not.toHaveProperty("workflowChild");
   });
 
   it("passes the parent model runtime while retaining the legacy model registry", async () => {
@@ -833,7 +805,6 @@ import {
   getConfig,
   getToolNamesForType,
 } from "../src/agent-types.js";
-import { createNestedSubagentTools } from "../src/nested-tools.js";
 
 const BUILTINS_7 = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 
@@ -847,7 +818,6 @@ function makeAgentConfig(overrides: Record<string, unknown> = {}) {
     systemPrompt: "Test.",
     promptMode: "replace" as const,
     inheritContext: false,
-    runInBackground: false,
     ...overrides,
   };
 }
@@ -987,29 +957,6 @@ describe("agent-runner session persistence", () => {
     vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ persistSession: true }));
     createAgentSession.mockResolvedValue({ session: createSession("OK").session });
     await runAgent(ctx, "Explore", "go", { pi });
-    expect(sessionManagerCreate).toHaveBeenCalled();
-    expect(sessionManagerInMemory).not.toHaveBeenCalled();
-  });
-
-  it("leaves a nested child in memory, since nothing can address it later", async () => {
-    // The default exists so `@handle` can reopen a conversation. A nested agent
-    // never gets a handle, so its transcript would be unreachable by anything —
-    // pure disk and /resume clutter.
-    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig());
-    createAgentSession.mockResolvedValue({ session: createSession("OK").session });
-
-    await runAgent(ctx, "Explore", "go", { pi, nested: true });
-
-    expect(sessionManagerInMemory).toHaveBeenCalled();
-    expect(sessionManagerCreate).not.toHaveBeenCalled();
-  });
-
-  it("still persists a nested child that asks for it in frontmatter", async () => {
-    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ persistSession: true }));
-    createAgentSession.mockResolvedValue({ session: createSession("OK").session });
-
-    await runAgent(ctx, "Explore", "go", { pi, nested: true });
-
     expect(sessionManagerCreate).toHaveBeenCalled();
     expect(sessionManagerInMemory).not.toHaveBeenCalled();
   });
@@ -1308,231 +1255,20 @@ describe("agent-runner master tool allowlist", () => {
     expect(tools).toContain("ok_ext");
   });
 
-  it("keeps nested tools unavailable without explicit opt-in", async () => {
+  it("does not register orchestration tools with extensions disabled", async () => {
     vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
     vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: false }));
     vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
     const { session } = createSession("OK");
     createAgentSession.mockResolvedValue({ session });
 
-    await runAgent(ctx, "Explore", "go", {
-      pi,
-      nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1 },
-    });
+    await runAgent(ctx, "Explore", "go", { pi });
 
-    expect(createNestedSubagentTools).not.toHaveBeenCalled();
-    expect(lastToolsPassed()).not.toContain("Agent");
+    expect(lastToolsPassed()).toEqual(BUILTINS_7);
     expect(createAgentSession.mock.calls[0][0].customTools).toEqual([]);
   });
 
-  it("injects scoped nested tools for an opted-in non-isolated agent", async () => {
-    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
-    vi.mocked(getAgentConfig).mockReturnValueOnce(
-      makeAgentConfig({ extensions: false, allowedSubagents: ["scout"] }),
-    );
-    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-    const manager = {} as any;
-
-    await runAgent(ctx, "Explore", "go", {
-      pi,
-      nestedRuntime: { manager, parentAgentId: "parent", depth: 1, maxSubagentDepth: 3 },
-    });
-
-    expect(createNestedSubagentTools).toHaveBeenCalledWith(expect.objectContaining({
-      manager,
-      parentAgentId: "parent",
-      depth: 1,
-      maxSubagentDepth: 3,
-      allowedSubagents: ["scout"],
-      configCwd: "/tmp",
-    }));
-    expect(lastToolsPassed()).toEqual(expect.arrayContaining([
-      "Agent", "get_subagent_result", "steer_subagent",
-    ]));
-    expect(createAgentSession.mock.calls[0][0].customTools).toHaveLength(3);
-  });
-
-  // Claude Code's workflow agents run as `workflow-subagent`, which disallows
-  // the Agent tool. Here an untyped workflow agent() runs as the built-in
-  // general-purpose, whose delegation must not follow it into the workflow.
-  it("gives the built-in general-purpose no nested tools as a workflow agent", async () => {
-    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
-    vi.mocked(getAgentConfig).mockReturnValueOnce(
-      makeAgentConfig({ extensions: false, allowedSubagents: "all", isDefault: true }),
-    );
-    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "general-purpose", "go", {
-      pi,
-      workflow: true,
-      nestedRuntime: { manager: {} as any, parentAgentId: "wf-agent-0", depth: 1 },
-    });
-
-    expect(createNestedSubagentTools).not.toHaveBeenCalled();
-    expect(lastToolsPassed()).not.toContain("Agent");
-    // Nor the "do not re-delegate" line, which only makes sense with the tool.
-    const { buildAgentPrompt } = await import("../src/prompts.js");
-    expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).not.toHaveProperty("delegationGuideline");
-  });
-
-  // Claude Code's general-purpose prompt closes with the re-delegation line. It
-  // is added exactly when the built-in can spawn.
-  describe("the built-in general-purpose's re-delegation line", () => {
-    async function extrasFor(agentOverrides: Record<string, unknown>): Promise<Record<string, unknown>> {
-      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
-      vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: false, ...agentOverrides }));
-      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-      const { session } = createSession("OK");
-      createAgentSession.mockResolvedValue({ session });
-      await runAgent(ctx, "general-purpose", "go", {
-        pi,
-        nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1 },
-      });
-      const { buildAgentPrompt } = await import("../src/prompts.js");
-      return vi.mocked(buildAgentPrompt).mock.lastCall![4] as Record<string, unknown>;
-    }
-
-    it("is added when the built-in receives the nested Agent tool", async () => {
-      expect(await extrasFor({ allowedSubagents: "all", isDefault: true })).toMatchObject({ delegationGuideline: true });
-    });
-
-    it("is left out when `Agent` is disallowed", async () => {
-      expect(await extrasFor({ allowedSubagents: "all", isDefault: true, disallowedTools: ["Agent"] }))
-        .not.toHaveProperty("delegationGuideline");
-    });
-
-    // Claude Code adds it to its general-purpose only, not to custom agents.
-    it("is left out for a custom agent that delegates", async () => {
-      expect(await extrasFor({ allowedSubagents: "all" })).not.toHaveProperty("delegationGuideline");
-    });
-  });
-
-  // A custom agent's `allowed_subagents` is the author's explicit opt-in, and
-  // workflows honored it before general-purpose could delegate.
-  it("keeps a custom agent's opt-in nested tools as a workflow agent", async () => {
-    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
-    vi.mocked(getAgentConfig).mockReturnValueOnce(
-      makeAgentConfig({ extensions: false, allowedSubagents: ["scout"] }),
-    );
-    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "lead", "go", {
-      pi,
-      workflow: true,
-      nestedRuntime: { manager: {} as any, parentAgentId: "wf-agent-0", depth: 1 },
-    });
-
-    expect(createNestedSubagentTools).toHaveBeenCalled();
-    expect(lastToolsPassed()).toContain("Agent");
-  });
-
-  it("keeps opt-in nested tools active UNDER EXTENSIONS despite the EXCLUDED-name collision", async () => {
-    // The nested tool names ARE EXCLUDED_TOOL_NAMES. Under the denylist mechanism
-    // they must (a) not be excluded from the registry, and (b) survive the live
-    // installExtensionToolScope renarrow that strips EXCLUDED_TOOL_NAMES.
-    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
-    vi.mocked(getAgentConfig).mockReturnValueOnce(
-      makeAgentConfig({ extensions: true, allowedSubagents: "all" }),
-    );
-    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-    withExtensions({ "/ext/ok.ts": ["ok_ext"] });
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "Explore", "go", {
-      pi,
-      nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1 },
-    });
-
-    const opts = createAgentSession.mock.calls[0][0];
-    // (a) not denied at the registry gate, and passed as customTools.
-    expect(opts.excludeTools ?? []).not.toContain("Agent");
-    expect(opts.customTools).toHaveLength(3);
-    // (b) survive the active-set renarrow alongside a real extension tool.
-    const active = lastToolsPassed();
-    expect(active).toEqual(expect.arrayContaining(["Agent", "get_subagent_result", "steer_subagent"]));
-    expect(active).toContain("ok_ext");
-  });
-
-  // Opt-in nested tools are re-admitted at three separate places because their
-  // names collide with EXCLUDED_TOOL_NAMES. Every one of those re-admissions
-  // carries a `disallowedTools` check, and no test set `disallowed_tools` and
-  // `allowed_subagents` together — so dropping any of the three checks would
-  // hand `Agent` back to an agent whose author explicitly denied it, with the
-  // suite still green.
-  describe("disallowed_tools beats opt-in nested delegation", () => {
-    it("denies the tool under the isolated static allowlist", async () => {
-      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
-      vi.mocked(getAgentConfig).mockReturnValueOnce(
-        makeAgentConfig({ extensions: false, allowedSubagents: "all", disallowedTools: ["Agent"] }),
-      );
-      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-      const { session } = createSession("OK");
-      createAgentSession.mockResolvedValue({ session });
-
-      await runAgent(ctx, "Explore", "go", {
-        pi,
-        nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1 },
-      });
-
-      const tools = lastToolsPassed();
-      expect(tools).not.toContain("Agent");
-      // The siblings the agent did NOT deny stay available.
-      expect(tools).toEqual(expect.arrayContaining(["get_subagent_result", "steer_subagent"]));
-    });
-
-    it("denies the tool at the registry gate under extensions", async () => {
-      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
-      vi.mocked(getAgentConfig).mockReturnValueOnce(
-        makeAgentConfig({ extensions: true, allowedSubagents: "all", disallowedTools: ["Agent"] }),
-      );
-      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
-      const { session } = createSession("OK");
-      createAgentSession.mockResolvedValue({ session });
-
-      await runAgent(ctx, "Explore", "go", {
-        pi,
-        nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1 },
-      });
-
-      expect(createAgentSession.mock.calls[0][0].excludeTools ?? []).toContain("Agent");
-      expect(lastToolsPassed()).not.toContain("Agent");
-    });
-
-    it("blocks the tool at runtime even though it was injected as a customTool", async () => {
-      // The registry gate and the active set are static snapshots; this is the
-      // live gate that judges a call as it happens. A nested tool is handed to
-      // the session as a customTool, so this is the last line of defense.
-      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
-      vi.mocked(getAgentConfig).mockReturnValueOnce(
-        makeAgentConfig({ extensions: true, allowedSubagents: "all", disallowedTools: ["Agent"] }),
-      );
-      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
-      const { session } = createSession("OK");
-      createAgentSession.mockResolvedValue({ session });
-
-      await runAgent(ctx, "Explore", "go", {
-        pi,
-        nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1 },
-      });
-
-      await expect(
-        session.agent.beforeToolCall?.({ toolCall: { name: "Agent" } }),
-      ).resolves.toMatchObject({ block: true });
-      // ...while a nested tool that was NOT denied still passes the same gate.
-      await expect(
-        session.agent.beforeToolCall?.({ toolCall: { name: "steer_subagent" } }),
-      ).resolves.not.toMatchObject({ block: true });
-    });
-
+  describe("StructuredOutput tool scoping", () => {
     it("keeps StructuredOutput reachable with no tools: allowlist", async () => {
       // The gate that would have silently killed this feature: `inScope` seeds
       // `keep` from the built-in list, and a customTool is in neither that nor
@@ -1571,8 +1307,7 @@ describe("agent-runner master tool allowlist", () => {
     it("does not let disallowed_tools remove StructuredOutput", async () => {
       // A schema was asked for by the caller, not by the agent definition.
       // Letting frontmatter take the tool away would make the request
-      // unsatisfiable rather than merely restricted — unlike a nested
-      // delegation tool, which is an opt-in the same frontmatter may retract.
+      // unsatisfiable rather than merely restricted.
       vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
       vi.mocked(getAgentConfig).mockReturnValueOnce(
         makeAgentConfig({ extensions: true, disallowedTools: ["StructuredOutput"] }),
@@ -1717,34 +1452,9 @@ describe("agent-runner master tool allowlist", () => {
       expect(session.prompt).toHaveBeenCalledTimes(1);
     });
 
-    it("a partial denial does not take down the whole nested set", async () => {
-      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
-      vi.mocked(getAgentConfig).mockReturnValueOnce(
-        makeAgentConfig({
-          extensions: false,
-          allowedSubagents: ["scout"],
-          disallowedTools: ["get_subagent_result"],
-        }),
-      );
-      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-      const { session } = createSession("OK");
-      createAgentSession.mockResolvedValue({ session });
-
-      await runAgent(ctx, "Explore", "go", {
-        pi,
-        nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1, maxSubagentDepth: 3 },
-      });
-
-      const tools = lastToolsPassed();
-      expect(tools).not.toContain("get_subagent_result");
-      expect(tools).toContain("Agent");
-      expect(tools).toContain("steer_subagent");
-    });
   });
 
-  it("still strips the orchestration tools under extensions when nesting is OFF", async () => {
-    // Guards the negative: without allowed_subagents the EXCLUDED names stay denied
-    // and inactive even though an extension registers tools with those very names.
+  it("denies orchestration tool names at the registry gate under extensions", async () => {
     vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
     vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
     vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
@@ -1754,66 +1464,14 @@ describe("agent-runner master tool allowlist", () => {
 
     await runAgent(ctx, "Explore", "go", { pi });
 
+    expect(createAgentSession.mock.calls[0][0].excludeTools).toEqual(expect.arrayContaining([
+      "Agent", "get_subagent_result", "steer_subagent",
+    ]));
     const active = lastToolsPassed();
     expect(active).not.toContain("Agent");
     expect(active).not.toContain("get_subagent_result");
     expect(active).not.toContain("steer_subagent");
     expect(active).toContain("ok_ext");
-  });
-
-  it("suppresses nested tools in isolated mode even when opted in", async () => {
-    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
-    vi.mocked(getAgentConfig).mockReturnValueOnce(
-      makeAgentConfig({ extensions: false, allowedSubagents: "all" }),
-    );
-    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "Explore", "go", {
-      pi,
-      isolated: true,
-      nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1 },
-    });
-
-    expect(createNestedSubagentTools).not.toHaveBeenCalled();
-    expect(lastToolsPassed()).not.toContain("Agent");
-  });
-
-  it("passes the inherited depth cap through to the nested tools", async () => {
-    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
-    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-
-    vi.mocked(getAgentConfig).mockReturnValueOnce(
-      makeAgentConfig({ extensions: false, allowedSubagents: "all" }),
-    );
-    await runAgent(ctx, "Explore", "go", {
-      pi,
-      nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1, maxSubagentDepth: 3 },
-    });
-    expect(createNestedSubagentTools).toHaveBeenLastCalledWith(expect.objectContaining({ maxSubagentDepth: 3 }));
-  });
-
-  it("injects no nested tools once the effective cap is reached", async () => {
-    // At the cap the agent can never spawn — and so can never own a child to
-    // fetch from or steer. Three always-erroring tools would just cost context.
-    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
-    vi.mocked(getAgentConfig).mockReturnValueOnce(
-      makeAgentConfig({ extensions: false, allowedSubagents: "all" }),
-    );
-    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "Explore", "go", {
-      pi,
-      nestedRuntime: { manager: {} as any, parentAgentId: "parent", depth: 1, maxSubagentDepth: 1 },
-    });
-
-    expect(createNestedSubagentTools).not.toHaveBeenCalled();
-    expect(lastToolsPassed()).not.toContain("Agent");
   });
 
   it("extensions: false with disallowedTools — denylist applies to built-ins", async () => {
@@ -1833,7 +1491,7 @@ describe("agent-runner master tool allowlist", () => {
   });
 
   it("a spawn's disallowedTools adds to the definition's, in either tool spelling", async () => {
-    // `agent({ disallowedTools })` from a workflow: `Bash` must
+    // The spawn denylist entry `Bash` must
     // deny pi's `bash`, and the agent file's own list must still apply.
     vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
     vi.mocked(getAgentConfig).mockReturnValueOnce(

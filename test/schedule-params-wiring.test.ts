@@ -24,7 +24,7 @@ import { getDefaultMaxTurns, normalizeMaxTurns } from "../src/agent-runner.js";
 import subagentsExtension from "../src/index.js";
 import { resolveStorePath, ScheduleStore } from "../src/schedule-store.js";
 import type { ScheduledSubagent } from "../src/types.js";
-import { ctx, hermeticDir, makePi, textOf } from "./helpers/boot-extension.js";
+import { ctx, hermeticDir, makePi, testAgentFile, textOf } from "./helpers/boot-extension.js";
 
 const SESSION_ID = "sched-wiring-session";
 
@@ -41,7 +41,7 @@ function bootedCtx() {
 async function scheduleAndReadBack(
   params: Record<string, unknown>,
 ): Promise<{ job: ScheduledSubagent; reply: string; restore: () => void }> {
-  const hermetic = hermeticDir();
+  const hermetic = hermeticDir({ agentFiles: { worker: testAgentFile("worker") }, settings: { fallbackSubagent: "worker" } });
   const { pi, tools, lifecycle } = makePi();
   subagentsExtension(pi);
 
@@ -68,7 +68,7 @@ async function scheduleAndReadBack(
 describe("Agent tool → persisted scheduled job", () => {
   it("persists the run-shaping params the job will fire with", async () => {
     const { job, restore } = await scheduleAndReadBack({
-      subagent_type: "general-purpose",
+      subagent_type: "worker",
       thinking: "high",
       isolated: true,
       isolation: "worktree",
@@ -90,7 +90,7 @@ describe("Agent tool → persisted scheduled job", () => {
     // would give the scheduled run a different limit from an identical
     // immediate run — and only at fire time.
     const { job, restore } = await scheduleAndReadBack({
-      subagent_type: "general-purpose",
+      subagent_type: "worker",
       max_turns: 0, // 0 means "unlimited", not "zero turns"
     });
     try {
@@ -101,7 +101,7 @@ describe("Agent tool → persisted scheduled job", () => {
   });
 
   it("falls back to the configured default turn limit when the call omits one", async () => {
-    const { job, restore } = await scheduleAndReadBack({ subagent_type: "general-purpose" });
+    const { job, restore } = await scheduleAndReadBack({ subagent_type: "worker" });
     try {
       expect(job.max_turns).toBe(normalizeMaxTurns(getDefaultMaxTurns()));
     } finally {
@@ -135,7 +135,7 @@ describe("Agent tool → schedule restrictions", () => {
     params: Record<string, unknown>,
     settings?: Record<string, unknown>,
   ): Promise<{ reply: string; jobCount: number; restore: () => void }> {
-    const hermetic = hermeticDir(settings ? { settings } : {});
+    const hermetic = hermeticDir({ agentFiles: { worker: testAgentFile("worker") }, settings });
     const { pi, tools, lifecycle } = makePi();
     subagentsExtension(pi);
 
@@ -149,7 +149,7 @@ describe("Agent tool → schedule restrictions", () => {
           prompt: "do the thing",
           description: "nightly sweep",
           schedule: "0 3 * * * *",
-          subagent_type: "general-purpose",
+          subagent_type: "worker",
           ...params,
         },
         undefined,
@@ -188,33 +188,14 @@ describe("Agent tool → schedule restrictions", () => {
     }
   });
 
-  it("refuses `schedule` with `run_in_background: false` rather than silently coercing it", async () => {
-    // README:91 long claimed this parameter was "forced to true". It is not —
-    // the call is refused. Silently flipping a parameter the caller explicitly
-    // set is the failure mode #37 was filed about; refusing is the intended
-    // behavior and this pins it.
-    const { reply, jobCount, restore } = await scheduleCall({ run_in_background: false });
+  it("returns a job ID without creating an agent ID", async () => {
+    const { reply, jobCount, restore } = await scheduleCall({});
     try {
-      expect(reply).toBe(
-        "Cannot combine `schedule` with `run_in_background: false` — scheduled jobs always run in background.",
-      );
-      expect(jobCount).toBe(0);
+      expect(reply).toContain("Scheduled");
+      expect(reply).not.toContain("Agent ID:");
+      expect(jobCount).toBe(1);
     } finally {
       restore();
-    }
-  });
-
-  it("accepts `run_in_background: true` and an omitted `run_in_background`", async () => {
-    // The mirror: only an explicit `false` is refused, so a caller that sets the
-    // flag by habit is not blocked.
-    for (const params of [{ run_in_background: true }, {}]) {
-      const { reply, jobCount, restore } = await scheduleCall(params);
-      try {
-        expect(reply).toContain("Scheduled");
-        expect(jobCount).toBe(1);
-      } finally {
-        restore();
-      }
     }
   });
 

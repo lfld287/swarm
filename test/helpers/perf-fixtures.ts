@@ -90,9 +90,7 @@ export function makeRecord(i: number, overrides: Record<string, unknown> = {}) {
       modelName: "sonnet 4.6",
       modelId: "anthropic/claude-sonnet-4-6",
       thinking: "high",
-      runInBackground: true,
     },
-    isBackground: true,
     session: perfSession(),
     ...overrides,
   };

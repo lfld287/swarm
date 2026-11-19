@@ -8,12 +8,10 @@ import {
   packageAgentFiles,
   packageAllowed,
   packageNameForPath,
-  packageWorkflowDirs,
   readSubagentManifest,
   resetPackageState,
   resolveDeclaredPaths,
   setPackageAgentsGate,
-  setPackageWorkflowsGate,
   setProjectTrusted,
   unscopedShortName,
 } from "../src/package-resources.js";
@@ -21,9 +19,9 @@ import {
 describe("readSubagentManifest", () => {
   const dirs = ["./agents"];
 
-  it("reads the nested pi.subagents object form", () => {
+  it("reads agents from a mixed pi.subagents object", () => {
     expect(readSubagentManifest({ pi: { subagents: { agents: dirs, workflows: ["./flows"] } } }))
-      .toEqual({ agents: dirs, workflows: ["./flows"] });
+      .toEqual({ agents: dirs });
   });
 
   it("reads pi.subagents as an array shorthand for agents", () => {
@@ -83,25 +81,25 @@ describe("resolveDeclaredPaths", () => {
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
   it("splits directory entries from file entries", () => {
-    const { dirs, files } = resolveDeclaredPaths(root, ["./agents", "./loose.md"], "agents");
+    const { dirs, files } = resolveDeclaredPaths(root, ["./agents", "./loose.md"]);
     expect(dirs).toEqual([join(root, "agents")]);
     expect(files).toEqual([join(root, "loose.md")]);
   });
 
   it("ignores a file entry whose extension is wrong for the kind", () => {
-    const { files } = resolveDeclaredPaths(root, ["./notes.txt"], "agents");
+    const { files } = resolveDeclaredPaths(root, ["./notes.txt"]);
     expect(files).toEqual([]);
   });
 
   it("applies ! exclusions", () => {
-    const { dirs } = resolveDeclaredPaths(root, ["./agents", "./extra", "!./extra"], "agents");
+    const { dirs } = resolveDeclaredPaths(root, ["./agents", "./extra", "!./extra"]);
     expect(dirs).toEqual([join(root, "agents")]);
   });
 
   it("refuses an entry that escapes the package root", () => {
     // A package manifest is third-party input; `../..` must not become a
     // scanned directory. Pi refuses the same shape in its own resolver.
-    expect(resolveDeclaredPaths(root, ["../", "../../etc", "/etc"], "agents"))
+    expect(resolveDeclaredPaths(root, ["../", "../../etc", "/etc"]))
       .toMatchObject({ dirs: [], files: [] });
   });
 
@@ -112,7 +110,7 @@ describe("resolveDeclaredPaths", () => {
     try {
       writeFileSync(join(outside, "sneaky.md"), "x");
       symlinkSync(outside, join(root, "escape"), "dir");
-      expect(resolveDeclaredPaths(root, ["./escape"], "agents")).toMatchObject({ dirs: [], files: [] });
+      expect(resolveDeclaredPaths(root, ["./escape"])).toMatchObject({ dirs: [], files: [] });
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -125,7 +123,7 @@ describe("resolveDeclaredPaths", () => {
     const link = join(linkDir, "pkg");
     try {
       symlinkSync(root, link, "dir");
-      expect(resolveDeclaredPaths(link, ["./agents"], "agents").dirs).toEqual([join(link, "agents")]);
+      expect(resolveDeclaredPaths(link, ["./agents"]).dirs).toEqual([join(link, "agents")]);
     } finally {
       unlinkSync(link);
       rmSync(linkDir, { recursive: true, force: true });
@@ -133,22 +131,22 @@ describe("resolveDeclaredPaths", () => {
   });
 
   it("drops entries that do not exist", () => {
-    expect(resolveDeclaredPaths(root, ["./nope"], "agents")).toMatchObject({ dirs: [], files: [] });
+    expect(resolveDeclaredPaths(root, ["./nope"])).toMatchObject({ dirs: [], files: [] });
   });
 
   it("de-duplicates repeated entries", () => {
-    const { dirs } = resolveDeclaredPaths(root, ["./agents", "agents", "./agents/"], "agents");
+    const { dirs } = resolveDeclaredPaths(root, ["./agents", "agents", "./agents/"]);
     expect(dirs).toEqual([join(root, "agents")]);
   });
 
   it("returns nothing for an absent declaration", () => {
-    expect(resolveDeclaredPaths(root, undefined, "workflows")).toMatchObject({ dirs: [], files: [] });
+    expect(resolveDeclaredPaths(root, undefined)).toMatchObject({ dirs: [], files: [] });
   });
 
   it("records a ! entry naming a file inside an included directory", () => {
     // The exclusion cannot be subtracted from `dirs` here — the directory is
     // only enumerated at load time — so it is carried separately.
-    const { dirs, excluded } = resolveDeclaredPaths(root, ["./agents", "!./agents/one.md"], "agents");
+    const { dirs, excluded } = resolveDeclaredPaths(root, ["./agents", "!./agents/one.md"]);
     expect(dirs).toEqual([join(root, "agents")]);
     expect([...excluded]).toEqual([realpathSync(join(root, "agents", "one.md"))]);
   });
@@ -156,12 +154,12 @@ describe("resolveDeclaredPaths", () => {
   it("records a ! entry for a path that does not exist", () => {
     // A package may exclude something it ships conditionally; the exclusion has
     // to survive so the file is still skipped if a later version adds it.
-    const { excluded } = resolveDeclaredPaths(root, ["./agents", "!./agents/later.md"], "agents");
+    const { excluded } = resolveDeclaredPaths(root, ["./agents", "!./agents/later.md"]);
     expect(excluded.size).toBe(1);
   });
 
   it("ignores a ! entry pointing outside the package root", () => {
-    expect(resolveDeclaredPaths(root, ["./agents", "!../../etc/passwd"], "agents").excluded.size).toBe(0);
+    expect(resolveDeclaredPaths(root, ["./agents", "!../../etc/passwd"]).excluded.size).toBe(0);
   });
 });
 
@@ -233,13 +231,11 @@ describe("discovery through pi's configured packages", () => {
   function makePackage(name: string, manifest: Record<string, unknown>): string {
     const root = join(tmpDir, name);
     mkdirSync(join(root, "agents"), { recursive: true });
-    mkdirSync(join(root, "workflows"), { recursive: true });
     writeFileSync(join(root, "package.json"), JSON.stringify({ name, version: "1.0.0", ...manifest }));
     writeFileSync(
       join(root, "agents", `${name}-agent.md`),
       `---\nname: ${name}-agent\ndescription: from ${name}\n---\nBody.\n`,
     );
-    writeFileSync(join(root, "workflows", "flow.js"), "export const meta = { name: 'flow', description: 'd' }\n");
     return root;
   }
 
@@ -287,10 +283,11 @@ describe("discovery through pi's configured packages", () => {
     expect(listPiPackages(projectDir)).toEqual([]);
   });
 
-  it("reads the workflows declaration into its own root list", () => {
+  it("ignores a legacy workflow-only manifest", () => {
     const root = makePackage("flows", { pi: { subagents: { workflows: ["./workflows"] } } });
     installGlobally(root);
-    expect(packageWorkflowDirs(projectDir)).toEqual([join(root, "workflows")]);
+    expect(listPiPackages(projectDir)).toEqual([]);
+    expect(packageAgentFiles(projectDir)).toEqual([]);
     expect(packageAgentDirs(projectDir)).toEqual([]);
   });
 
@@ -352,13 +349,6 @@ describe("discovery through pi's configured packages", () => {
     it("admits none for an empty allowlist", () => {
       setPackageAgentsGate([]);
       expect(packageAgentDirs(projectDir)).toEqual([]);
-    });
-
-    it("gates agents and workflows independently", () => {
-      setPackageAgentsGate(false);
-      setPackageWorkflowsGate(true);
-      expect(packageAgentDirs(projectDir)).toEqual([]);
-      expect(packageWorkflowDirs(projectDir)).toEqual([join(a, "workflows"), join(b, "workflows")]);
     });
 
     it("re-scans after the gate changes rather than serving the cached list", () => {
@@ -446,15 +436,6 @@ describe("discovery through pi's configured packages", () => {
       expect(packageNameForPath(join(b, "agents", "beta-agent.md"), projectDir)).toBe("beta");
       setPackageAgentsGate(false);
       expect(packageNameForPath(join(b, "agents", "beta-agent.md"), projectDir)).toBeUndefined();
-    });
-
-    it("consults the gate for the kind it is asked about", () => {
-      const root = makePackage("both", { pi: { subagents: { agents: ["./agents"], workflows: ["./workflows"] } } });
-      installGlobally(root);
-      setPackageAgentsGate(false);
-      setPackageWorkflowsGate(true);
-      expect(packageNameForPath(join(root, "agents", "both-agent.md"), projectDir)).toBeUndefined();
-      expect(packageNameForPath(join(root, "workflows", "flow.js"), projectDir, "workflows")).toBe("both");
     });
   });
 

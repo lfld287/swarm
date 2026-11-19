@@ -1,6 +1,6 @@
 /**
- * package-resources.ts — Discover agent and workflow files that installed pi
- * packages declare in their `package.json`.
+ * package-resources.ts — Discover agent files that installed pi packages
+ * declare in their `package.json`.
  *
  * ## Why this exists
  *
@@ -44,7 +44,7 @@
  * cross-compatibility with `nicobailon/pi-subagents`, which reads the same two
  * shapes, so a package author writes one manifest that works on either extension.
  *
- *   "pi":            { "subagents": { "agents": ["./agents"], "workflows": ["./flows"] } }
+ *   "pi":            { "subagents": { "agents": ["./agents"] } }
  *   "pi":            { "subagents": ["./agents"] }            // shorthand for { agents }
  *   "pi-subagents":  { "agents": ["./agents"] }
  *   "pi-subagents":  ["./agents"]                             // shorthand for { agents }
@@ -56,15 +56,6 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DefaultPackageManager, getAgentDir, ProjectTrustStore, SettingsManager } from "@earendil-works/pi-coding-agent";
-
-/** Resource kinds a package may declare. Agents are `.md`, workflows are `.js`. */
-export type PackageResourceKind = "agents" | "workflows";
-
-/** File extension scanned for each kind, mirroring the local roots for each. */
-const KIND_EXTENSION: Record<PackageResourceKind, string> = {
-  agents: ".md",
-  workflows: ".js",
-};
 
 /**
  * Per-file size ceiling for package-provided resources, matching Claude Code's
@@ -96,7 +87,7 @@ export interface PiPackage {
 }
 
 /**
- * The gate for one resource kind, as persisted in our settings:
+ * The package agent gate, as persisted in our settings:
  * `true` (default) = every declaring package, `false` = none, `string[]` =
  * only packages whose short name, full name, or source matches an entry.
  */
@@ -110,25 +101,21 @@ export interface PackageDiscoveryOptions {
    * back to the session state set by {@link setProjectTrusted}.
    */
   projectTrusted?: boolean;
-  /** Gate override. Omitted falls back to the session state for the kind. */
+  /** Gate override. Omitted falls back to the session state. */
   gate?: PackageGate;
 }
 
 // ---- Session state ----
 //
 // Held here rather than threaded through every caller, matching how the rest of
-// this extension carries session-wide settings (`setMaxSubagentDepth`,
-// `setWorktreeIsolationEnabled`, ...). The alternative was an options bag
-// travelling from `index.ts` through `resolveWorkflowScript`,
-// `resolveWorkflowSource`, `readSavedWorkflow` and `listSavedWorkflows` purely
-// so a gate could be consulted at the bottom.
+// this extension carries session-wide settings (`setOutputTranscriptDefault`,
+// `setWorktreeIsolationEnabled`, ...).
 //
-// Both gates start `undefined`, which reads as `true`: absent settings mean
+// The gate starts `undefined`, which reads as `true`: absent settings mean
 // every declaring package contributes, matching pi's own default for the
 // resources it owns.
 
 let agentsGate: PackageGate;
-let workflowsGate: PackageGate;
 /**
  * Defaults to `false` — an extension activates before any session context
  * exists, and reading an untrusted project's package list only to take it away
@@ -143,18 +130,8 @@ export function setPackageAgentsGate(gate: PackageGate): void {
   invalidatePackageCache();
 }
 
-/** Apply the `packageWorkflows` setting. Drops the cache, since roots may change. */
-export function setPackageWorkflowsGate(gate: PackageGate): void {
-  workflowsGate = gate;
-  invalidatePackageCache();
-}
-
 export function getPackageAgentsGate(): PackageGate {
   return agentsGate;
-}
-
-export function getPackageWorkflowsGate(): PackageGate {
-  return workflowsGate;
 }
 
 /**
@@ -208,7 +185,6 @@ export function setProjectTrusted(trusted: boolean): void {
 /** Reset every session-scoped value. Tests only — the extension never un-loads. */
 export function resetPackageState(): void {
   agentsGate = undefined;
-  workflowsGate = undefined;
   projectTrustedState = false;
   invalidatePackageCache();
 }
@@ -216,7 +192,6 @@ export function resetPackageState(): void {
 /** What a package declared, after normalising the accepted spellings. */
 export interface DeclaredEntries {
   agents?: string[];
-  workflows?: string[];
 }
 
 /** Absolute paths a declaration resolved to, split by what the loader needs. */
@@ -239,9 +214,8 @@ function stringArray(val: unknown): string[] | undefined {
 }
 
 /**
- * Normalize one accepted spelling into `{ agents, workflows }`.
- * A bare array is the `agents` shorthand — the only kind that existed when the
- * shorthand was worth having, and the shape the other fork's docs show.
+ * Normalize one accepted spelling into `{ agents }`.
+ * A bare array is the `agents` shorthand, also accepted by the other fork.
  */
 function normalizeDeclaration(val: unknown): DeclaredEntries | undefined {
   const asArray = stringArray(val);
@@ -249,9 +223,7 @@ function normalizeDeclaration(val: unknown): DeclaredEntries | undefined {
   if (!val || typeof val !== "object" || Array.isArray(val)) return undefined;
   const obj = val as Record<string, unknown>;
   const agents = stringArray(obj.agents);
-  const workflows = stringArray(obj.workflows);
-  if (!agents && !workflows) return undefined;
-  return { agents, workflows };
+  return agents === undefined ? undefined : { agents };
 }
 
 /**
@@ -340,7 +312,7 @@ function expandEntry(root: string, entry: string): string | undefined {
 }
 
 /**
- * Resolve one kind's declared entries into concrete absolute paths inside the
+ * Resolve declared agent entries into concrete absolute paths inside the
  * package: directories to scan, and individual files.
  *
  * Split into `{ dirs, files }` rather than a flat list because the agent loader
@@ -353,7 +325,6 @@ function expandEntry(root: string, entry: string): string | undefined {
 export function resolveDeclaredPaths(
   root: string,
   entries: string[] | undefined,
-  kind: PackageResourceKind,
 ): ResolvedResourcePaths {
   const dirs: string[] = [];
   const files: string[] = [];
@@ -369,7 +340,6 @@ export function resolveDeclaredPaths(
     if (isInside(root, target)) excluded.add(realOrSelf(target));
   }
 
-  const ext = KIND_EXTENSION[kind];
   for (const entry of entries) {
     if (entry.startsWith("!")) continue;
     const path = expandEntry(root, entry);
@@ -382,7 +352,7 @@ export function resolveDeclaredPaths(
     }
     if (stat.isDirectory()) {
       if (!dirs.includes(path)) dirs.push(path);
-    } else if (stat.isFile() && path.endsWith(ext) && !files.includes(path)) {
+    } else if (stat.isFile() && path.endsWith(".md") && !files.includes(path)) {
       files.push(path);
     }
   }
@@ -479,13 +449,11 @@ interface PackageOwner {
  * agent files themselves are still re-read on every load, so editing a linked
  * package's agent still takes effect immediately.
  *
- * Keyed by cwd because nested subagents load from `context.configCwd`, which is
- * not necessarily the main session's directory, and by the gate because a
- * settings change must not be served a stale allowlist.
+ * Keyed by cwd and by the gate so changes to the project or settings are not
+ * served a stale list.
  */
 interface CacheEntry {
   agents: ResolvedResourcePaths;
-  workflows: ResolvedResourcePaths;
   /**
    * Every package the gate admitted, longest root first, so a path can be
    * traced back to the package that contributed it. Recorded during the scan
@@ -503,7 +471,7 @@ function emptyPaths(): ResolvedResourcePaths {
 
 /** A whole cache entry with nothing in it, for a gate that admits no package. */
 function emptyEntry(): CacheEntry {
-  return { agents: emptyPaths(), workflows: emptyPaths(), owners: [] };
+  return { agents: emptyPaths(), owners: [] };
 }
 const cache = new Map<string, CacheEntry>();
 
@@ -524,14 +492,12 @@ function scan(cwd: string, projectTrusted: boolean, gate: PackageGate): CacheEnt
     // settings source (`npm:@foo/bar@1.0.0`) is the last resort, which is what
     // pi itself falls back to when it labels a package-provided resource.
     entry.owners.push({ root: resolve(pkg.root), name: pkg.name ?? pkg.shortName ?? pkg.source });
-    for (const kind of ["agents", "workflows"] as const) {
-      const resolvedPaths = resolveDeclaredPaths(pkg.root, pkg.declared[kind], kind);
-      entry[kind].dirs.push(...resolvedPaths.dirs);
-      entry[kind].files.push(...resolvedPaths.files);
-      // One flat set across packages: an exclusion is an absolute path, so it
-      // can only ever match inside the package that wrote it.
-      for (const path of resolvedPaths.excluded) (entry[kind].excluded as Set<string>).add(path);
-    }
+    const resolvedPaths = resolveDeclaredPaths(pkg.root, pkg.declared.agents);
+    entry.agents.dirs.push(...resolvedPaths.dirs);
+    entry.agents.files.push(...resolvedPaths.files);
+    // One flat set across packages: an exclusion is an absolute path, so it
+    // can only ever match inside the package that wrote it.
+    for (const path of resolvedPaths.excluded) (entry.agents.excluded as Set<string>).add(path);
   }
   // Longest root first, so a package installed inside another's `node_modules`
   // claims its own files rather than losing them to its host.
@@ -539,8 +505,8 @@ function scan(cwd: string, projectTrusted: boolean, gate: PackageGate): CacheEnt
   return entry;
 }
 
-function cacheEntryFor(cwd: string, kind: PackageResourceKind, opts: PackageDiscoveryOptions): CacheEntry {
-  const gate = opts.gate ?? (kind === "agents" ? agentsGate : workflowsGate);
+function cacheEntryFor(cwd: string, opts: PackageDiscoveryOptions): CacheEntry {
+  const gate = opts.gate ?? agentsGate;
   // An empty allowlist matches nothing, like `false` — see `sanitizePackageGate`
   // in settings.ts for why an empty array is kept rather than dropped.
   if (gate === false || (Array.isArray(gate) && gate.length === 0)) return emptyEntry();
@@ -557,17 +523,14 @@ function cacheEntryFor(cwd: string, kind: PackageResourceKind, opts: PackageDisc
   return hit;
 }
 
-function resolved(cwd: string, kind: PackageResourceKind, opts: PackageDiscoveryOptions): ResolvedResourcePaths {
-  return cacheEntryFor(cwd, kind, opts)[kind];
+function resolved(cwd: string, opts: PackageDiscoveryOptions): ResolvedResourcePaths {
+  return cacheEntryFor(cwd, opts).agents;
 }
 
 /**
  * Name of the installed package that provided `path`, or undefined when no
  * admitted package owns it. What `/agents` shows so a package agent can name its
  * origin, and what a user needs in order to write a `packageAgents` allowlist.
- *
- * `kind` selects which gate to consult, because the two are configured
- * separately: a package may be admitted for agents but not for workflows.
  *
  * A plain prefix test is enough. `resolveDeclaredPaths` builds every declared
  * path as `resolve(root, entry)` without canonicalizing it — only the
@@ -579,11 +542,10 @@ function resolved(cwd: string, kind: PackageResourceKind, opts: PackageDiscovery
 export function packageNameForPath(
   path: string,
   cwd: string,
-  kind: PackageResourceKind = "agents",
   opts: PackageDiscoveryOptions = {},
 ): string | undefined {
   const abs = resolve(path);
-  return cacheEntryFor(cwd, kind, opts).owners.find(
+  return cacheEntryFor(cwd, opts).owners.find(
     o => abs === o.root || abs.startsWith(o.root + sep),
   )?.name;
 }
@@ -595,12 +557,12 @@ export function packageNameForPath(
 export function packageAgentDirs(cwd: string, opts: PackageDiscoveryOptions = {}): string[] {
   // A copy: the cache holds this array for the rest of the session, so a caller
   // that sorted or spliced it would corrupt every later load.
-  return [...resolved(cwd, "agents", opts).dirs];
+  return [...resolved(cwd, opts).dirs];
 }
 
 /** Individually declared agent `.md` files (a manifest entry naming a file, not a directory). */
 export function packageAgentFiles(cwd: string, opts: PackageDiscoveryOptions = {}): string[] {
-  return [...resolved(cwd, "agents", opts).files];
+  return [...resolved(cwd, opts).files];
 }
 
 /**
@@ -613,40 +575,8 @@ export function packageAgentFiles(cwd: string, opts: PackageDiscoveryOptions = {
 export function isPackageResourceExcluded(
   path: string,
   cwd: string,
-  kind: PackageResourceKind,
   opts: PackageDiscoveryOptions = {},
 ): boolean {
-  const excluded = resolved(cwd, kind, opts).excluded;
+  const excluded = resolved(cwd, opts).excluded;
   return excluded.size > 0 && excluded.has(realOrSelf(path));
-}
-
-/**
- * Directories of package-declared workflow scripts, appended to
- * `savedWorkflowRoots` so a name resolves there last.
- */
-export function packageWorkflowDirs(cwd: string, opts: PackageDiscoveryOptions = {}): string[] {
-  return [...resolved(cwd, "workflows", opts).dirs];
-}
-
-/**
- * Individually declared workflow scripts, as `name -> absolute path`.
- *
- * A name lookup wants a directory, and a declared *file* has none — but standing
- * its parent directory in as a root would make every sibling `.js` resolvable,
- * so `workflows: ["./one.js"]` would quietly offer the package's other scripts
- * too, and `["./index.js"]` would offer everything at the package root. That is
- * the opposite of the rule the whole feature rests on, that a package only
- * contributes what it names. An exact map keeps the declaration honest, and
- * matches how a declared agent file is already handled.
- *
- * Later entries lose a name clash, so a package's own directory-sourced script
- * is not displaced by a file entry from a package resolved after it.
- */
-export function packageWorkflowFiles(cwd: string, opts: PackageDiscoveryOptions = {}): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const path of resolved(cwd, "workflows", opts).files) {
-    const name = basename(path, KIND_EXTENSION.workflows);
-    if (!out.has(name)) out.set(name, path);
-  }
-  return out;
 }

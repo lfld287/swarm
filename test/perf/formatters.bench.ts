@@ -28,7 +28,6 @@ const INVOCATION = {
   modelName: "sonnet 4.6",
   modelId: "anthropic/claude-sonnet-4-6",
   thinking: "high",
-  runInBackground: true,
   maxTurns: 60,
 } as any;
 

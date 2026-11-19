@@ -19,6 +19,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTestAgent } from "./helpers/boot-extension.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -98,6 +99,7 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
     prevCwd = process.cwd();
     mkdirSync(join(tmpDir, ".pi"), { recursive: true });
     writeFileSync(join(tmpDir, ".pi", "subagents.json"), JSON.stringify({ schedulingEnabled: false }));
+    writeTestAgent(tmpDir, "worker");
     process.chdir(tmpDir);
   });
 
@@ -143,7 +145,7 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
     const requestId = "req-142";
     await busHandlers.get("subagents:rpc:spawn")!({
       requestId,
-      type: "general-purpose",
+      type: "worker",
       prompt: "go",
       options: { description: "rpc gating test" },
     });
@@ -169,7 +171,7 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
     try {
       await busHandlers.get("subagents:rpc:spawn")!({
         requestId: "req-steer-spawn",
-        type: "general-purpose",
+        type: "worker",
         prompt: "go",
         options: { description: "rpc steer test" },
       });
@@ -190,7 +192,7 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
     }
   });
 
-  it("subagents:rpc:get and :list answer for an RPC-spawned agent and its nested child", async () => {
+  it("subagents:rpc:get and :list answer for RPC-spawned agents", async () => {
     const { pi, lifecycle, busHandlers } = makePi();
     subagentsExtension(pi);
     await lifecycle.get("session_start")({}, ctx());
@@ -200,18 +202,17 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
       pi.events.emit.mock.calls.find((c: any[]) => c[0] === `${channel}:reply:${requestId}`)?.[1];
     try {
       await busHandlers.get("subagents:rpc:spawn")!({
-        requestId: "req-get-spawn", type: "general-purpose", prompt: "go", options: { description: "snapshot owner" },
+        requestId: "req-get-spawn", type: "worker", prompt: "go", options: { description: "snapshot owner" },
       });
-      const topId: string = reply("subagents:rpc:spawn", "req-get-spawn").data.id;
-      // The nested child, spawned the way the parent's scoped Agent tool does.
-      const { manager, parentAgentId } = vi.mocked(runAgent).mock.lastCall![3].nestedRuntime;
-      const childId: string = manager.spawn(pi, ctx(), "general-purpose", "dig", {
-        description: "nested dig", isBackground: true, parentAgentId, depth: 2, maxSubagentDepth: 2,
+      const firstId: string = reply("subagents:rpc:spawn", "req-get-spawn").data.id;
+      await busHandlers.get("subagents:rpc:spawn")!({
+        requestId: "req-get-spawn2", type: "worker", prompt: "dig", options: { description: "snapshot dig" },
       });
+      const secondId: string = reply("subagents:rpc:spawn", "req-get-spawn2").data.id;
 
-      await busHandlers.get("subagents:rpc:get")!({ requestId: "req-get", agentId: childId });
+      await busHandlers.get("subagents:rpc:get")!({ requestId: "req-get", agentId: secondId });
       expect(reply("subagents:rpc:get", "req-get")).toEqual({ success: true, data: { agent: expect.objectContaining({
-        id: childId, status: "running", description: "nested dig", parentAgentId: topId, depth: 2,
+        id: secondId, status: "running", description: "snapshot dig",
       }) } });
 
       await busHandlers.get("subagents:rpc:get")!({ requestId: "req-get-missing", agentId: "nope" });
@@ -219,17 +220,16 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
 
       await busHandlers.get("subagents:rpc:list")!({ requestId: "req-list" });
       const agents = reply("subagents:rpc:list", "req-list").data.agents;
-      expect(agents.map((a: any) => a.id).sort()).toEqual([childId, topId].sort());
-      expect(agents.find((a: any) => a.id === topId)).not.toHaveProperty("parentAgentId");
+      expect(agents.map((a: any) => a.id).sort()).toEqual([firstId, secondId].sort());
     } finally {
       await lifecycle.get("session_shutdown")();
     }
   });
 
-  // #443 over the bus: the parent stops at once, its nested child is inside a
-  // write that ignores the abort. The stop reply must not arrive before that
+  // #443 over the bus: an agent is inside a write that ignores the abort.
+  // The stop reply must not arrive before that
   // write has landed, or the caller's replacement write could be overwritten.
-  it("subagents:rpc:stop replies only after a stopped agent's nested child has settled", async () => {
+  it("subagents:rpc:stop replies only after the stopped agent has settled", async () => {
     const { pi, lifecycle, busHandlers } = makePi();
     subagentsExtension(pi);
     await lifecycle.get("session_start")({}, ctx());
@@ -237,30 +237,22 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
     let openGate!: () => void;
     const gate = new Promise<void>((resolve) => { openGate = resolve; });
     const writes: string[] = [];
-    vi.mocked(runAgent).mockImplementation(async (_ctx: any, _type: any, prompt: any, opts: any) => {
-      if (prompt === "dig") {
-        await gate;
-        writes.push("OLD");
-      } else {
-        await new Promise<void>((resolve) => opts.signal.addEventListener("abort", () => resolve(), { once: true }));
-      }
+    vi.mocked(runAgent).mockImplementation(async () => {
+      await gate;
+      writes.push("OLD");
       return { responseText: "", session: { dispose: vi.fn() }, aborted: true, steered: false } as any;
     });
     const reply = (channel: string, requestId: string) =>
       pi.events.emit.mock.calls.find((c: any[]) => c[0] === `${channel}:reply:${requestId}`)?.[1];
     try {
       await busHandlers.get("subagents:rpc:spawn")!({
-        requestId: "req-443-spawn", type: "general-purpose", prompt: "go", options: { description: "owner" },
+        requestId: "req-443-spawn", type: "worker", prompt: "go", options: { description: "owner" },
       });
       const topId: string = reply("subagents:rpc:spawn", "req-443-spawn").data.id;
-      const { manager, parentAgentId } = vi.mocked(runAgent).mock.lastCall![3].nestedRuntime;
-      manager.spawn(pi, ctx(), "general-purpose", "dig", {
-        description: "nested dig", isBackground: true, parentAgentId, depth: 2, maxSubagentDepth: 2,
-      });
 
       const stopped = busHandlers.get("subagents:rpc:stop")!({ requestId: "req-443-stop", agentId: topId });
       await new Promise((r) => setTimeout(r, 20));
-      expect(reply("subagents:rpc:stop", "req-443-stop"), "no reply while the child's write is in flight").toBeUndefined();
+      expect(reply("subagents:rpc:stop", "req-443-stop"), "no reply while the agent's write is in flight").toBeUndefined();
 
       openGate();
       await stopped;
@@ -273,7 +265,7 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
     }
   });
 
-  // The way on after `settled: false`: `get` shows the tree is still settling,
+  // The way on after `settled: false`: `get` shows the agent is still settling,
   // and a repeat stop waits again instead of answering "Agent is not running".
   it("a stop that timed out can be repeated, and get shows settling until then", async () => {
     const { pi, lifecycle, busHandlers } = makePi();
@@ -282,22 +274,17 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
 
     let openGate!: () => void;
     const gate = new Promise<void>((resolve) => { openGate = resolve; });
-    vi.mocked(runAgent).mockImplementation(async (_ctx: any, _type: any, prompt: any, opts: any) => {
-      if (prompt === "dig") await gate;
-      else await new Promise<void>((resolve) => opts.signal.addEventListener("abort", () => resolve(), { once: true }));
+    vi.mocked(runAgent).mockImplementation(async () => {
+      await gate;
       return { responseText: "", session: { dispose: vi.fn() }, aborted: true, steered: false } as any;
     });
     const reply = (channel: string, requestId: string) =>
       pi.events.emit.mock.calls.find((c: any[]) => c[0] === `${channel}:reply:${requestId}`)?.[1];
     try {
       await busHandlers.get("subagents:rpc:spawn")!({
-        requestId: "req-rs-spawn", type: "general-purpose", prompt: "go", options: { description: "owner" },
+        requestId: "req-rs-spawn", type: "worker", prompt: "go", options: { description: "owner" },
       });
       const topId: string = reply("subagents:rpc:spawn", "req-rs-spawn").data.id;
-      const { manager, parentAgentId } = vi.mocked(runAgent).mock.lastCall![3].nestedRuntime;
-      manager.spawn(pi, ctx(), "general-purpose", "dig", {
-        description: "nested dig", isBackground: true, parentAgentId, depth: 2, maxSubagentDepth: 2,
-      });
 
       await busHandlers.get("subagents:rpc:stop")!({ requestId: "req-rs-stop1", agentId: topId, settleTimeoutMs: 20 });
       expect(reply("subagents:rpc:stop", "req-rs-stop1")).toEqual({ success: true, data: { settled: false } });
@@ -307,7 +294,7 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
 
       const second = busHandlers.get("subagents:rpc:stop")!({ requestId: "req-rs-stop2", agentId: topId });
       await new Promise((r) => setTimeout(r, 20));
-      expect(reply("subagents:rpc:stop", "req-rs-stop2"), "still waiting on the child").toBeUndefined();
+      expect(reply("subagents:rpc:stop", "req-rs-stop2"), "still waiting on the agent").toBeUndefined();
       openGate();
       await second;
       expect(reply("subagents:rpc:stop", "req-rs-stop2")).toEqual({ success: true, data: { settled: true } });
@@ -337,7 +324,7 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
     };
     try {
       const spawn = async (description: string) => {
-        await tools.get("Agent").execute(`tc-${description}`, { prompt: "go", description, subagent_type: "general-purpose", run_in_background: true }, undefined, undefined, ctx());
+        await tools.get("Agent").execute(`tc-${description}`, { prompt: "go", description, subagent_type: "worker" }, undefined, undefined, ctx());
         await new Promise((r) => setTimeout(r, 0));
       };
       await spawn("unread");
@@ -379,7 +366,7 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
       return { responseText: "done", session: { dispose: vi.fn(), messages: [] }, aborted: false, steered: false } as any;
     });
     const spawn = async (description: string, prompt: string) => {
-      const result = await tools.get("Agent").execute(`tc-${description}`, { prompt, description, subagent_type: "general-purpose", run_in_background: true }, undefined, undefined, session);
+      const result = await tools.get("Agent").execute(`tc-${description}`, { prompt, description, subagent_type: "worker" }, undefined, undefined, session);
       await new Promise((r) => setTimeout(r, 0));
       return result.content[0].text.match(/Agent ID: (\S+)/)![1] as string;
     };
@@ -421,7 +408,7 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
     try {
       await busHandlers.get("subagents:rpc:spawn")!({
         requestId: "req-widget",
-        type: "general-purpose",
+        type: "worker",
         prompt: "go",
         options: { description: "visible RPC agent" },
       });
@@ -460,9 +447,9 @@ describe("issue #142: RPC handlers + subagents:ready are gated on session_start"
     await lifecycle.get("tool_execution_start")({}, extensionCtx);
     await busHandlers.get("subagents:rpc:spawn")!({
       requestId: "req-activity",
-      type: "general-purpose",
+      type: "worker",
       prompt: "go",
-      options: { description: "rpc activity test", isBackground: true },
+      options: { description: "rpc activity test" },
     });
     await vi.waitFor(() => expect(onToolActivity).toBeTypeOf("function"));
     onToolActivity!({ type: "start", toolName: "bash" });

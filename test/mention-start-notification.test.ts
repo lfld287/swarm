@@ -18,7 +18,7 @@ vi.mock("../src/mention-clone.js", () => ({ runMentionClone: vi.fn() }));
 import { resumeAgent, runAgent } from "../src/agent-runner.js";
 import subagentsExtension from "../src/index.js";
 import { runMentionClone } from "../src/mention-clone.js";
-import { ctx, type Hermetic, hermeticDir, makePi } from "./helpers/boot-extension.js";
+import { ctx, type Hermetic, hermeticDir, makePi, testAgentFile } from "./helpers/boot-extension.js";
 
 let hermetic: Hermetic | undefined;
 let booted: Map<string, any> | undefined;
@@ -48,7 +48,7 @@ function fakeSession() {
 }
 
 function boot(settings: Record<string, unknown> = {}) {
-  hermetic = hermeticDir({ settings: { outputTranscript: false, ...settings } });
+  hermetic = hermeticDir({ agentFiles: { Surveyor: testAgentFile("Surveyor") }, settings: { outputTranscript: false, ...settings } });
   const b = makePi();
   subagentsExtension(b.pi);
   booted = b.lifecycle;
@@ -69,7 +69,7 @@ describe("an agent started by a mention", () => {
       failure: undefined,
     } as any);
 
-    await send(lifecycle, "@Explore find the planted bugs in src/");
+    await send(lifecycle, "@Surveyor find the planted bugs in src/");
     await new Promise(r => setTimeout(r, 500));
 
     expect(pi.sendMessage).toHaveBeenCalledWith(
@@ -94,7 +94,7 @@ describe("an agent started by a mention", () => {
       failure: undefined,
     } as any);
 
-    await send(lifecycle, "@Explore whats your favorite color");
+    await send(lifecycle, "@Surveyor whats your favorite color");
     await new Promise(r => setTimeout(r, 500));
 
     expect(pi.sendMessage).toHaveBeenCalledWith(

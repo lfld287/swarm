@@ -24,7 +24,8 @@ import type { Context } from "@earendil-works/pi-ai";
 import { fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setWorktreeIsolationEnabled } from "../src/worktree.js";
-import { agentCall, type FauxReply, type PrintModeRun, runPrintMode } from "./helpers/print-mode-runner.js";
+import { testAgentFile } from "./helpers/boot-extension.js";
+import { agentCall, type FauxReply, type PrintModeRun, runPrintMode, settledAgent } from "./helpers/print-mode-runner.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -63,14 +64,6 @@ function toolResultNames(context: Context): string[] {
     .map((m) => (m as { toolName?: string }).toolName ?? "");
 }
 
-/** Every Agent tool result the parent session received, concatenated. */
-function agentResultText(session: Context): string {
-  return session.messages
-    .filter((m) => m.role === "toolResult" && (m as { toolName?: string }).toolName === "Agent")
-    .flatMap((m) => ((m.content ?? []) as Array<{ text?: string }>).map((b) => b.text ?? ""))
-    .join("\n");
-}
-
 /**
  * One responder for both sessions, split on the first user message.
  *
@@ -87,15 +80,9 @@ function respondSpawning(isolation: "worktree" | undefined): (context: Context) 
       }
       return CHILD_MARKER;
     }
-    // Parent: spawn once, then echo the tool result so a lost one fails loudly.
-    if (toolResultNames(context).includes("Agent")) {
-      return `parent saw: ${agentResultText(context)}`;
-    }
+    if (toolResultNames(context).includes("Agent")) return "Delegated.";
     return agentCall({
-      // Foreground: this test reads the child's marker out of the parent's
-      // inline Agent tool result, which a background spawn replaces with a
-      // "started in background" receipt.
-      run_in_background: false,
+      subagent_type: "worker",
       description: "worktree work",
       prompt: CHILD_PROMPT,
       ...(isolation ? { isolation } : {}),
@@ -124,6 +111,7 @@ describe("worktree isolation e2e (real git, real pi-mono, faux model)", () => {
     repos.push(repo);
 
     run = await runPrintMode({
+      agentFiles: { worker: testAgentFile("worker", "bash") },
       prompt: "Delegate the work.",
       cwd: repo,
       respond: respondSpawning("worktree"),
@@ -134,7 +122,9 @@ describe("worktree isolation e2e (real git, real pi-mono, faux model)", () => {
     // saw the file. This is the guarantee; everything below is its bookkeeping.
     expect(existsSync(join(repo, MARKER_FILE))).toBe(false);
 
-    const result = agentResultText(run.parentSession);
+    const record = settledAgent(run);
+    expect(record.status).toBe("completed");
+    const result = record.result ?? "";
     expect(result).toContain(CHILD_MARKER);
 
     // The result names a branch and the command to merge it — the only artifact,
@@ -168,13 +158,16 @@ describe("worktree isolation e2e (real git, real pi-mono, faux model)", () => {
     // resolver entirely. This test pins the behaviour and goes red when both are
     // gone; each gate is pinned individually by its own unit test.
     run = await runPrintMode({
+      agentFiles: { worker: testAgentFile("worker", "bash") },
       prompt: "Delegate the work.",
       cwd: repo,
       respond: respondSpawning("worktree"),
       live: false,
     });
 
-    const result = agentResultText(run.parentSession);
+    const record = settledAgent(run);
+    expect(record.status).toBe("completed");
+    const result = record.result ?? "";
     expect(result).toContain(CHILD_MARKER);
 
     // Ran in the main checkout: the file is right there, and no branch was made.

@@ -25,10 +25,9 @@
  * session entries through `addUsageToTotals`; every 0.80.x sums assistant
  * messages alone and drops the field. Running unconditionally is the point —
  * against a Pi that does not aggregate, this fails rather than skipping, which
- * is how the range stays honest. `peerDependencies` moved to `>=0.81.0` for
- * exactly this reason, so the CI floor job runs it too. The floor has since moved
- * on past it (the Workflow tool needs 0.84.0), so this no longer pins the range's
- * lower edge — it still pins the behaviour that made 0.80.x unsupportable.
+ * is how the range stays honest. This was why `peerDependencies` moved to
+ * `>=0.81.0`. The current `>=1.1.0` floor is higher, but the CI floor job still
+ * runs this test to guard the behaviour that made 0.80.x unsupportable.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

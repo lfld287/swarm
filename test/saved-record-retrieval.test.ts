@@ -10,6 +10,8 @@
  * A second activation over the same session branch is the reload case, and the
  * same lookup as an evicted record: the manager has no record for the id.
  */
+import { unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/agent-runner.js", async () => {
@@ -19,14 +21,14 @@ vi.mock("../src/agent-runner.js", async () => {
 
 import { type RunResult, resumeAgent, runAgent } from "../src/agent-runner.js";
 import subagentsExtension from "../src/index.js";
-import { ctx, type Hermetic, hermeticDir, makePi, textOf } from "./helpers/boot-extension.js";
+import { ctx, type Hermetic, hermeticDir, makePi, publishedManager, testAgentFile, textOf } from "./helpers/boot-extension.js";
 
 let hermetic: Hermetic | undefined;
 /** The most recently booted extension, so teardown runs even when a test throws. */
 let booted: Map<string, any> | undefined;
 
 beforeEach(() => {
-  hermetic = hermeticDir({ settings: { schedulingEnabled: false } });
+  hermetic = hermeticDir({ agentFiles: { Surveyor: testAgentFile("Surveyor") }, settings: { schedulingEnabled: false } });
   vi.mocked(runAgent).mockReset();
   vi.mocked(resumeAgent).mockReset();
 });
@@ -51,7 +53,7 @@ function boot(branch: any[]) {
 
 /**
  * Run an agent to completion in a first activation, optionally resume it in the
- * foreground, shut it down, and return the agent's id.
+ * background, shut it down, and return the agent's id.
  */
 async function finishedAgent(
   branch: any[],
@@ -61,7 +63,7 @@ async function finishedAgent(
 ): Promise<string> {
   vi.mocked(runAgent).mockResolvedValue({
     responseText: "THE-FULL-RESULT",
-    session: { dispose: vi.fn() } as any,
+    session: { dispose: vi.fn(), messages: [], subscribe: () => () => {} } as any,
     aborted: false,
     steered: false,
     ...run,
@@ -72,18 +74,20 @@ async function finishedAgent(
     .get("Agent")
     .execute(
       "tc-spawn",
-      { prompt: "Review the change.", description: "Review the change", subagent_type: "Explore", run_in_background: false, ...spawn },
+      { prompt: "Review the change.", description: "Review the change", subagent_type: "Surveyor", ...spawn },
       undefined,
       undefined,
       context,
     );
   const id = (res as any).details.agentId;
   if (resumed) {
+    await publishedManager().waitForAll();
     vi.mocked(resumeAgent).mockResolvedValue(resumed);
     await tools
       .get("Agent")
-      .execute("tc-resume", { prompt: "Continue.", description: "Continue", subagent_type: "Explore", resume: id, run_in_background: false }, undefined, undefined, context);
+      .execute("tc-resume", { prompt: "Continue.", description: "Continue", subagent_type: "Surveyor", resume: id }, undefined, undefined, context);
   }
+  await publishedManager().waitForAll();
   await lifecycle.get("session_shutdown")?.();
   booted = undefined;
   return id;
@@ -99,14 +103,15 @@ async function readAfterReload(branch: any[], agentId: string): Promise<string> 
 }
 
 describe("get_subagent_result falls back to the saved record", () => {
-  it("answers from the session's subagents:record entry once the live record is gone", async () => {
+  it("answers from the saved record even after the role file is deleted", async () => {
     const branch: any[] = [];
     const id = await finishedAgent(branch);
     expect(branch.some((entry) => entry.customType === "subagents:record" && entry.data.id === id)).toBe(true);
+    unlinkSync(join(process.cwd(), ".pi", "agents", "Surveyor.md"));
 
     const out = await readAfterReload(branch, id);
     expect(out).toContain(`Agent: ${id}`);
-    expect(out).toContain("Status: completed");
+    expect(out).toContain("Type: Surveyor | Status: completed");
     expect(out).toContain("THE-FULL-RESULT");
     expect(out).toContain("saved record");
   });
@@ -125,7 +130,7 @@ describe("get_subagent_result falls back to the saved record", () => {
     expect(out).toContain(`Finished: ${new Date(completedAt).toISOString().slice(0, 16)}Z (2d ago)`);
   });
 
-  it("answers with a foreground resume's outcome, not the earlier run's", async () => {
+  it("answers with a resumed run's outcome, not the earlier run's", async () => {
     const branch: any[] = [];
     const id = await finishedAgent(branch, {}, { text: "THE-RESUMED-RESULT", aborted: false, steered: false });
 
@@ -154,7 +159,7 @@ describe("get_subagent_result falls back to the saved record", () => {
     const branch: any[] = [];
     const id = await finishedAgent(branch, { responseText: "THE-NAMED-RESULT" }, undefined, { name: "auth-audit" });
     const saved = branch.find((entry) => entry.customType === "subagents:record" && entry.data.id === id);
-    expect(saved.data).toMatchObject({ handle: "explore", alias: "auth-audit" });
+    expect(saved.data).toMatchObject({ handle: "surveyor", alias: "auth-audit" });
 
     // A second activation has a new manager: no live record and no tombstone,
     // which is the reload case. The handle is stored lowercased; the call uses
@@ -170,7 +175,7 @@ describe("get_subagent_result falls back to the saved record", () => {
     expect(byName).toContain("THE-NAMED-RESULT");
     expect(byName).toContain("saved record");
 
-    const byType = await read("Explore");
+    const byType = await read("Surveyor");
     expect(byType).toContain(`Agent: ${id}`);
     expect(byType).toContain("THE-NAMED-RESULT");
     expect(byType).toMatch(/\nFinished: \d{4}-\d\d-\d\dT\d\d:\d\dZ \(<1m ago\)\n/);
@@ -182,8 +187,8 @@ describe("get_subagent_result falls back to the saved record", () => {
   it("returns the latest saved record when a later agent reuses the type handle", async () => {
     const branch: any[] = [];
     const first = await finishedAgent(branch, { responseText: "FIRST-RESULT" }, undefined, { name: "auth-audit" });
-    // The first activation is gone, so nothing is holding "explore". The next
-    // Explore is handed that handle again and appends a second record.
+    // The first activation is gone, so nothing is holding "surveyor". The next
+    // Surveyor is handed that handle again and appends a second record.
     const second = await finishedAgent(branch, { responseText: "SECOND-RESULT" });
 
     const { tools } = boot(branch);
@@ -191,7 +196,7 @@ describe("get_subagent_result falls back to the saved record", () => {
     const read = (agentId: string) =>
       tools.get("get_subagent_result").execute("tc-read", { agent_id: agentId }, undefined, undefined, context).then(textOf);
 
-    const byHandle = await read("explore");
+    const byHandle = await read("surveyor");
     expect(byHandle).toContain(`Agent: ${second}`);
     expect(byHandle).toContain("SECOND-RESULT");
     expect(byHandle).not.toContain("FIRST-RESULT");
@@ -208,23 +213,24 @@ describe("get_subagent_result falls back to the saved record", () => {
     expect(byId).not.toContain("SECOND-RESULT");
   });
 
-  it("finds a disambiguated type handle (explore-2) after reload", async () => {
-    // Two Explores in one activation: the first keeps `explore`, so the second
-    // is numbered `explore-2`. Both persist a record; after reload the suffixed
+  it("finds a disambiguated type handle (surveyor-2) after reload", async () => {
+    // Two Surveyors in one activation: the first keeps `surveyor`, so the second
+    // is numbered `surveyor-2`. Both persist a record; after reload the suffixed
     // handle has to match the saved entry on its own.
     const branch: any[] = [];
     const { tools, lifecycle } = boot(branch);
     const context = ctx({ sessionManager: { getSessionId: vi.fn(() => "s1"), getBranch: vi.fn(() => branch) } });
     const spawn = (responseText: string) => {
-      vi.mocked(runAgent).mockResolvedValueOnce({ responseText, session: { dispose: vi.fn() } as any, aborted: false, steered: false });
+      vi.mocked(runAgent).mockResolvedValueOnce({ responseText, session: { dispose: vi.fn(), messages: [], subscribe: () => () => {} } as any, aborted: false, steered: false });
       return tools
         .get("Agent")
-        .execute("tc-spawn", { prompt: "Review.", description: "Review", subagent_type: "Explore", run_in_background: false }, undefined, undefined, context)
+        .execute("tc-spawn", { prompt: "Review.", description: "Review", subagent_type: "Surveyor" }, undefined, undefined, context)
         .then((res) => (res as any).details.agentId as string);
     };
     await spawn("FIRST-RESULT");
     const second = await spawn("SECOND-RESULT");
-    expect(branch.find((e) => e.customType === "subagents:record" && e.data.id === second)?.data.handle).toBe("explore-2");
+    await publishedManager().waitForAll();
+    expect(branch.find((e) => e.customType === "subagents:record" && e.data.id === second)?.data.handle).toBe("surveyor-2");
     await lifecycle.get("session_shutdown")?.();
     booted = undefined;
 
@@ -232,7 +238,7 @@ describe("get_subagent_result falls back to the saved record", () => {
     const out = textOf(
       await tools2
         .get("get_subagent_result")
-        .execute("tc-read", { agent_id: "Explore-2" }, undefined, undefined, ctx({ sessionManager: { getSessionId: vi.fn(() => "s1"), getBranch: vi.fn(() => branch) } })),
+        .execute("tc-read", { agent_id: "Surveyor-2" }, undefined, undefined, ctx({ sessionManager: { getSessionId: vi.fn(() => "s1"), getBranch: vi.fn(() => branch) } })),
     );
     expect(out).toContain(`Agent: ${second}`);
     expect(out).toContain("SECOND-RESULT");

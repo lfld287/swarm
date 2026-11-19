@@ -249,7 +249,6 @@ export class SubagentScheduler {
       if (!dispatch.ok) throw new Error(dispatch.message);
       agentId = manager.spawn(pi, ctx, dispatch.type, job.prompt, {
         description: job.description,
-        isBackground: true,
         bypassQueue: true,
         model: resolvedModel,
         maxTurns: job.max_turns,
@@ -267,7 +266,6 @@ export class SubagentScheduler {
           // and rendering it as "max turns: 0" would read as a limit of none.
           maxTurns: normalizeMaxTurns(job.max_turns),
           isolated: job.isolated,
-          runInBackground: true,
           isolation: job.isolation,
         },
       });
@@ -294,10 +292,9 @@ export class SubagentScheduler {
     // AgentManager's promise resolves either way (its .catch returns ""), so we
     // can't infer success/failure from the promise — read record.status instead.
     // Terminal states: completed/steered = success; error/aborted/stopped = error.
-    // awaitStartup first: with isolation: "worktree" the run promise only exists
-    // once the repo copy is made, and a failed copy rejects here.
-    manager.awaitStartup(agentId)
-      .then(() => manager.getRecord(agentId)?.promise)
+    // A fired job bypasses the queue, so its tracked promise is already set
+    // and includes worktree startup as well as execution.
+    Promise.resolve(manager.getRecord(agentId)?.promise)
       .then(() => {
         const r = manager.getRecord(agentId);
         const failed = r?.status === "error" || r?.status === "aborted" || r?.status === "stopped";

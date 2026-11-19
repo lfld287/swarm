@@ -7,7 +7,7 @@
  * Agents uses, so those definitions render as written.
  */
 
-import { getConfig } from "./agent-types.js";
+import { getAgentConfig } from "./agent-types.js";
 
 const NAMED_AGENT_COLORS: Readonly<Record<string, string>> = {
   // Claude Code's eight subagent colors, as its default theme renders them.
@@ -146,7 +146,7 @@ export function renderAgentNameLabel(
 
 /** Whether an agent renders as a badge — i.e. it has a valid configured color. */
 export function hasAgentBadge(type: string | undefined): boolean {
-  return type !== undefined && resolveAgentColor(getConfig(type).color) !== undefined;
+  return type !== undefined && resolveAgentColor(getAgentConfig(type)?.color) !== undefined;
 }
 
 /** Render a registered agent's display name with its configured color. */
@@ -155,7 +155,7 @@ export function renderAgentName(
   theme: AgentNameTheme,
   style: AgentNameStyle = {},
 ): string {
-  if (!type) return renderAgentNameLabel("Agent", undefined, theme, style);
-  const config = getConfig(type);
-  return renderAgentNameLabel(config.displayName, config.color, theme, style);
+  if (type === undefined) return renderAgentNameLabel("Agent", undefined, theme, style);
+  const config = getAgentConfig(type);
+  return renderAgentNameLabel(config?.displayName ?? type, config?.color, theme, style);
 }

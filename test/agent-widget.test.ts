@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { renderRunningAgentStatus } from "../src/index.js";
 import type { WidgetMode } from "../src/types.js";
 import { type AgentActivity, AgentWidget, fgPreservingNestedStyles, formatCost, formatSessionTokens } from "../src/ui/agent-widget.js";
 
@@ -42,18 +41,6 @@ describe("formatSessionTokens", () => {
   });
 });
 
-describe("renderRunningAgentStatus", () => {
-  it("renders running status as separate component lines", () => {
-    const theme = { fg: (_c: string, s: string) => s };
-    const component = renderRunningAgentStatus("⠋", "thinking: xhigh · 4 tool uses", "thinking…", theme);
-
-    expect(component.render(120).map((line) => line.trimEnd())).toEqual([
-      "⠋ thinking: xhigh · 4 tool uses",
-      "  ⎿  thinking…",
-    ]);
-  });
-});
-
 describe("AgentWidget", () => {
   const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
 
@@ -66,10 +53,7 @@ describe("AgentWidget", () => {
     };
   }
 
-  function makeRecord(
-    id: string,
-    opts: { isBackground?: boolean; parentAgentId?: string; workflowId?: string } = {},
-  ) {
+  function makeRecord(id: string) {
     return {
       id,
       type: "general-purpose",
@@ -80,9 +64,6 @@ describe("AgentWidget", () => {
       lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       compactionCount: 0,
       invocation: { modelName: "sonnet 4.6", modelId: "anthropic/claude-sonnet-4-6", thinking: "high" },
-      isBackground: opts.isBackground,
-      parentAgentId: opts.parentAgentId,
-      workflowId: opts.workflowId,
     };
   }
 
@@ -107,87 +88,46 @@ describe("AgentWidget", () => {
       .join("\n");
   }
 
-  // "all" (and the no-policy constructor default) shows every agent.
-  it("shows foreground agents in 'all' mode (and by default)", () => {
-    const manager = { listAgents: () => [makeRecord("foreground", { isBackground: false })] };
-    expect(renderLines(manager, "foreground")).toContain("foreground description");
-    expect(renderLines(manager, "foreground", () => "all")).toContain("foreground description");
-  });
-
-  it("hides nested children in every coordinator widget mode", () => {
-    const manager = {
-      listAgents: () => [makeRecord("nested", { isBackground: true, parentAgentId: "parent" })],
-    };
-    expect(renderLines(manager, "nested", () => "all")).toBe("");
-    expect(renderLines(manager, "nested", () => "background")).toBe("");
-  });
-
-  it("hides a workflow's agents in every coordinator widget mode", () => {
-    // They belong to the run, which reports for them through its own card and
-    // its own row in the fleet list.
-    const manager = {
-      listAgents: () => [makeRecord("child", { isBackground: true, workflowId: "wf_abc" })],
-    };
-    expect(renderLines(manager, "child", () => "all")).toBe("");
-    expect(renderLines(manager, "child", () => "background")).toBe("");
-  });
-
-  it("excludes foreground agents in 'background' mode", () => {
-    const manager = { listAgents: () => [makeRecord("foreground", { isBackground: false })] };
-    expect(renderLines(manager, "foreground", () => "background")).toBe("");
-  });
-
-  // Also covers scheduler-spawned agents (isBackground=true, no `invocation`
-  // snapshot): if the filter still keyed off `invocation.runInBackground` —
-  // #118's original approach — this would wrongly vanish.
-  it("renders background agents in 'background' mode", () => {
-    const manager = { listAgents: () => [makeRecord("background", { isBackground: true })] };
-    const lines = renderLines(manager, "background", () => "background");
-    expect(lines).toContain("Agents");
-    expect(lines).toContain("background description");
-  });
-
-  // 'background' excludes only agents *known* to be foreground; one with no
-  // isBackground flag (e.g. a cross-extension RPC spawn) is kept, not hidden.
-  it("keeps agents with no isBackground flag in 'background' mode", () => {
-    const manager = { listAgents: () => [makeRecord("unflagged", {})] };
-    expect(renderLines(manager, "unflagged", () => "background")).toContain("unflagged description");
+  it("shows all live agents, with or without invocation metadata", () => {
+    const manager = { listAgents: () => [makeRecord("worker")] };
+    expect(renderLines(manager, "worker")).toContain("worker description");
+    expect(renderLines(manager, "worker", () => "all")).toContain("worker description");
   });
 
   // The model is opt-in: the row is already dense, and the same pair is on the
   // tool result and in the conversation viewer either way.
   it("names the model and thinking on a running row under showModel", () => {
-    const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
+    const manager = { listAgents: () => [makeRecord("bg")] };
 
-    const on = renderLines(manager, "bg", () => "background", true);
+    const on = renderLines(manager, "bg", () => "all", true);
     // Bare level, not "thinking: high" — the label is dropped on this surface.
     expect(on).toContain("sonnet 4.6 · high");
     expect(on).not.toContain("thinking:");
   });
 
   it("renders the row exactly as before when showModel is off", () => {
-    const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
+    const manager = { listAgents: () => [makeRecord("bg")] };
 
-    const off = renderLines(manager, "bg", () => "background");
+    const off = renderLines(manager, "bg", () => "all");
     expect(off).toContain("bg description");
     expect(off).not.toContain("sonnet 4.6");
     expect(off).not.toContain("thinking:");
   });
 
   it("carries the short label, never the canonical id, onto the row", () => {
-    const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
+    const manager = { listAgents: () => [makeRecord("bg")] };
 
-    expect(renderLines(manager, "bg", () => "background", true))
+    expect(renderLines(manager, "bg", () => "all", true))
       .not.toContain("anthropic/claude-sonnet-4-6");
   });
 
   it("discloses a level the run did not honor", () => {
-    const record = makeRecord("bg", { isBackground: true });
+    const record = makeRecord("bg");
     record.invocation = { modelName: "haiku 4.5", thinking: "high", requestedThinking: "max" };
     const manager = { listAgents: () => [record] };
 
     // Label stripped, but the "(asked max)" annotation survives the strip.
-    expect(renderLines(manager, "bg", () => "background", true))
+    expect(renderLines(manager, "bg", () => "all", true))
       .toContain("haiku 4.5 · high (asked max)");
   });
 
@@ -195,10 +135,10 @@ describe("AgentWidget", () => {
   // the whole widget and push every finished agent out of it.
   it("keeps queued agents on one summary line and finished agents visible", () => {
     const records = [
-      ...[1, 2, 3].map(i => ({ ...makeRecord(`run${i}`, { isBackground: true }), status: "running" })),
-      ...[1, 2, 3, 4, 5, 6, 7].map(i => ({ ...makeRecord(`q${i}`, { isBackground: true }), status: "queued" })),
+      ...[1, 2, 3].map(i => ({ ...makeRecord(`run${i}`), status: "running" })),
+      ...[1, 2, 3, 4, 5, 6, 7].map(i => ({ ...makeRecord(`q${i}`), status: "queued" })),
       ...[1, 2, 3].map(i => ({
-        ...makeRecord(`fin${i}`, { isBackground: true }),
+        ...makeRecord(`fin${i}`),
         status: "completed",
         completedAt: Date.now(),
       })),
@@ -206,7 +146,7 @@ describe("AgentWidget", () => {
     const widget = new AgentWidget(
       { listAgents: () => records } as any,
       new Map(),
-      () => "background",
+      () => "all",
       () => false,
       () => true,
     );
@@ -224,7 +164,7 @@ describe("AgentWidget", () => {
 
   // "off" hides the widget entirely — even a background agent renders nothing.
   it("renders nothing in 'off' mode", () => {
-    const manager = { listAgents: () => [makeRecord("background", { isBackground: true })] };
+    const manager = { listAgents: () => [makeRecord("background")] };
     expect(renderLines(manager, "background", () => "off")).toBe("");
   });
 });
@@ -288,7 +228,7 @@ describe("AgentWidget cost display", () => {
     };
     // Carries figures of its own, in the shape the tracker used to have: spend
     // is read from the record now, so these must not reach the line. Only the
-    // record accumulates a nested child's spend, and only it outlives the run.
+    // record is the source of truth that outlives the run.
     const activity = new Map([["a1", {
       activeTools: new Map(),
       toolUses: 1,
@@ -401,7 +341,6 @@ describe("AgentWidget overflow accounting", () => {
       completedAt: status === "completed" ? Date.now() : undefined,
       lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       compactionCount: 0,
-      isBackground: true,
     };
   }
 

@@ -104,8 +104,9 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
     return { pi, tools, lifecycle };
   }
 
+  // Both cases now exercise the same background-only dispatch.
   for (const background of [false, true]) {
-    it(`refuses an unknown type without spawning (run_in_background: ${background})`, async () => {
+    it(`refuses an unknown type before starting a background agent (case ${background ? 2 : 1})`, async () => {
       const { tools } = boot();
       setFallbackSubagent(NO_FALLBACK);
 
@@ -115,41 +116,44 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
           prompt: "do it",
           description: "typo dispatch",
           subagent_type: "definitely-missing",
-          run_in_background: background,
         },
         undefined, undefined, ctx(),
       );
 
-      expect(textOf(result)).toContain('Unknown or disabled agent type: "definitely-missing"');
+      expect(textOf(result)).toContain('Unknown, disabled, or ambiguous agent type: "definitely-missing"');
       expect(textOf(result)).toContain("scout");
       // The whole point: nothing ran.
       expect(runAgent).not.toHaveBeenCalled();
     });
   }
 
-  it("still falls back — and says so — when the setting is unset", async () => {
-    const { tools } = boot();
+  it("clears a previously configured fallback on a new boot without that setting", async () => {
+    const settingsFile = join(cwd, ".pi", "subagents.json");
+    writeFileSync(settingsFile, JSON.stringify({ fallbackSubagent: "scout" }));
+    const first = boot();
     vi.mocked(runAgent).mockResolvedValue({
       responseText: "done", session: { dispose: vi.fn() } as any, aborted: false, steered: false,
     });
+    const params = { prompt: "do it", description: "typo dispatch", subagent_type: "definitely-missing" };
+    const result = await first.tools.get("Agent").execute("with-fallback", params, undefined, undefined, ctx());
+    expect(textOf(result)).toContain('Note: Unknown agent type "definitely-missing" — using scout.');
+    expect(runAgent).toHaveBeenCalledWith(expect.anything(), "scout", "do it", expect.anything());
+    await first.lifecycle.get("session_shutdown")?.();
 
-    const result = await tools.get("Agent").execute(
-      "tc-2",
-      { prompt: "do it", description: "typo dispatch", subagent_type: "definitely-missing" },
-      undefined, undefined, ctx(),
-    );
-
-    expect(textOf(result)).toContain('Note: Unknown agent type "definitely-missing"');
-    // Not merely "something ran" — a fallback that routed anywhere else would pass that.
-    expect(runAgent).toHaveBeenCalledWith(
-      expect.anything(), "general-purpose", "do it", expect.anything(),
-    );
+    rmSync(settingsFile);
+    vi.mocked(runAgent).mockClear();
+    const second = boot();
+    const refused = await second.tools.get("Agent").execute("without-fallback", params, undefined, undefined, ctx());
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain('"definitely-missing". Available: scout. Define or enable a role');
+    expect(runAgent).not.toHaveBeenCalled();
+    await second.lifecycle.get("session_shutdown")?.();
   });
 
-  it("carries the fallback note on the background branch too", async () => {
-    // Previously the note was computed after spawnAndWait returned, so only a
-    // foreground caller ever saw it (#183).
+  it("includes the fallback note in the background dispatch receipt", async () => {
+    // The receipt must include the note before the agent finishes (#183).
     const { tools } = boot();
+    setFallbackSubagent("scout");
     vi.mocked(runAgent).mockReturnValue(new Promise(() => {}) as any);
 
     const result = await tools.get("Agent").execute(
@@ -158,7 +162,6 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
         prompt: "do it",
         description: "typo dispatch",
         subagent_type: "definitely-missing",
-        run_in_background: true,
       },
       undefined, undefined, ctx(),
     );
@@ -181,7 +184,7 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
       undefined, undefined, ctx(),
     );
 
-    expect(textOf(result)).toContain("Unknown or disabled agent type");
+    expect(textOf(result)).toContain("Unknown, disabled, or ambiguous agent type");
     expect(runAgent).not.toHaveBeenCalled();
   });
 
@@ -190,6 +193,7 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
     // nullish — the job would be stored with an empty type and re-fail forever.
     const { tools, lifecycle } = boot();
     await lifecycle.get("session_start")({}, ctx());
+    setFallbackSubagent("scout");
 
     const result = await tools.get("Agent").execute(
       "tc-5",
@@ -203,7 +207,7 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
       JSON.parse(readFileSync(join(storeDir, f), "utf-8")).jobs ?? [],
     );
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].subagent_type).toBe("general-purpose");
+    expect(jobs[0].subagent_type).toBe("scout");
   });
 
   it("never blocks resume, which ignores subagent_type entirely", async () => {
@@ -218,7 +222,7 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
     });
     const spawned = await tools.get("Agent").execute(
       "tc-6",
-      { prompt: "start", description: "live agent", subagent_type: "scout", run_in_background: false },
+      { prompt: "start", description: "live agent", subagent_type: "scout" },
       undefined, undefined, ctx(),
     );
     const id = /Agent ID: (\S+)/.exec(textOf(spawned))?.[1]
@@ -232,7 +236,7 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
       undefined, undefined, ctx(),
     );
 
-    expect(textOf(resumed)).not.toContain("Unknown or disabled agent type");
+    expect(textOf(resumed)).not.toContain("Unknown, disabled, or ambiguous agent type");
   });
 
   it("applies the same contract to cross-extension spawns", async () => {
@@ -243,7 +247,7 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
     const registry = (globalThis as any)[Symbol.for("pi-subagents:manager")];
 
     expect(() => registry.spawn({}, ctx(), "definitely-missing", "do it", { description: "rpc" }))
-      .toThrow(/Unknown or disabled agent type/);
+      .toThrow(/Unknown, disabled, or ambiguous agent type/);
     expect(runAgent).not.toHaveBeenCalled();
   });
 });

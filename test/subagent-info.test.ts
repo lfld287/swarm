@@ -26,9 +26,6 @@ describe("toSubagentInfo", () => {
   it("exposes exactly the documented fields of a finished, owned record", () => {
     const info = toSubagentInfo(record({
       status: "completed",
-      depth: 2,
-      parentAgentId: "p1",
-      workflowId: "w1",
       completedAt: 4000,
       toolUses: 3,
       result: "done",
@@ -44,14 +41,11 @@ describe("toSubagentInfo", () => {
     }));
 
     expect(Object.keys(info).sort()).toEqual([
-      "completedAt", "depth", "description", "durationMs", "error", "id", "ownUsage", "parentAgentId",
+      "completedAt", "description", "durationMs", "error", "id", "ownUsage",
       "result", "sessionFile", "startedAt", "status", "structuredJson", "tokens", "toolUses",
-      "type", "usage", "workflowId",
+      "type", "usage",
     ]);
     expect(info).toMatchObject({
-      depth: 2,
-      parentAgentId: "p1",
-      workflowId: "w1",
       durationMs: 3000,
       structuredJson: '{"verdict":"FAIL"}',
       sessionFile: "/sessions/a1.jsonl",
@@ -68,9 +62,8 @@ describe("toSubagentInfo", () => {
     const info = toSubagentInfo(record(), 1500);
 
     expect(Object.keys(info).sort()).toEqual([
-      "depth", "description", "durationMs", "id", "startedAt", "status", "toolUses", "type",
+      "description", "durationMs", "id", "startedAt", "status", "toolUses", "type",
     ]);
-    expect(info.depth).toBe(1);
     expect(info.durationMs).toBe(500);
   });
 });

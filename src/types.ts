@@ -8,11 +8,8 @@ import type { LifetimeUsage } from "./usage.js";
 
 export type { ThinkingLevel };
 
-/** Agent type: any string name (built-in defaults or user-defined). */
+/** Agent type: the name of a custom role. */
 export type SubagentType = string;
-
-/** Names of the three embedded default agents. */
-export const DEFAULT_AGENT_NAMES = ["general-purpose", "Explore", "Plan"] as const;
 
 /**
  * Advertised thinking levels, ordered to mirror pi-ai's EXTENDED_THINKING_LEVELS
@@ -74,17 +71,10 @@ export interface AgentConfig {
   outputTranscript?: boolean;
   /** Optional session directory used when persistSession is true. Omitted = pi's normal session location. */
   sessionDir?: string;
-  /**
-   * Nested delegation, off by default: undefined = no nested tools;
-   * "all" = any enabled agent; string[] = only those agent types.
-   */
-  allowedSubagents?: "all" | string[];
   systemPrompt: string;
   promptMode: "replace" | "append";
   /** Default for spawn: fork parent conversation. undefined = caller decides. */
   inheritContext?: boolean;
-  /** Default for spawn: run in background. undefined = caller decides. */
-  runInBackground?: boolean;
   /** Default for spawn: no extension tools. undefined = caller decides. */
   isolated?: boolean;
   /** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
@@ -94,30 +84,21 @@ export interface AgentConfig {
    * "off" refuses one even when the caller asks (frontmatter outranks params).
    */
   isolation?: IsolationMode;
-  /** true = this is an embedded default agent (informational) */
-  isDefault?: boolean;
-  /** false = agent is hidden from the registry */
+  /** false = agent is listed but cannot be spawned */
   enabled?: boolean;
   /**
    * Where this agent was loaded from. `"package"` means an installed pi package
    * declared it (see package-resources.ts) — those files live under pi's install
    * root, so `/agents` treats them as read-only and offers Eject instead of Edit.
    */
-  source?: "default" | "project" | "global" | "package";
-  /** Path of the .md it was loaded from. Unset for embedded defaults. */
+  source?: "project" | "global" | "package";
+  /** Path of the .md it was loaded from. */
   sourcePath?: string;
 }
 
 export type JoinMode = 'async' | 'group' | 'smart';
 
-/**
- * Display mode for the persistent above-editor agent widget.
- * - `all`: show every agent (foreground + background).
- * - `background`: hide foreground agents (they already render inline as the
- *   Agent tool result, #118); show background/queued/scheduled/RPC.
- * - `off`: hide the widget entirely.
- */
-export type WidgetMode = 'all' | 'background' | 'off';
+export type WidgetMode = "all" | "off";
 
 /**
  * Prompt-cache retention for subagent model calls: pi's own values, plus
@@ -180,17 +161,12 @@ export type MentionResolution =
   | { kind: "live"; record: AgentRecord }
   | { kind: "tombstone"; entry: AgentTombstone };
 
-/** Which concurrency pool a run is charged to. */
-export type Pool = "background" | "foreground";
-
 export interface AgentRecord {
   id: string;
   type: SubagentType;
   /**
    * Typeable name for the `@handle message` prompt mention, derived from the
-   * agent type and numbered when siblings collide (`explore`, `explore-2`).
-   * Top-level agents only — nested children are hidden from every top-level
-   * surface, so nothing can address them.
+   * agent type and numbered when handles collide (`explore`, `explore-2`).
    */
   handle?: string;
   /**
@@ -211,35 +187,10 @@ export interface AgentRecord {
   abortController?: AbortController;
   promise?: Promise<string>;
   /**
-   * A caller is awaiting this agent inline (`spawnAndWait`) — what
-   * `maxConcurrentForeground` bounds. Distinct from `isBackground === false`,
-   * which says only that the agent has an inline result surface: a detached
-   * cross-extension RPC spawn is foreground by that measure and yet blocks
-   * nobody, so it takes no slot.
-   *
-   * Cleared when the inline caller stops waiting: by `sendToBackground`, or
-   * when the run settles.
-   */
-  blocking?: boolean;
-  /**
-   * The concurrency pool this run's slot is charged to, set once when it
-   * starts. `settleRun` releases exactly this; `sendToBackground` is the only
-   * thing that moves it, together with the counters.
-   */
-  chargedPool?: Pool;
-  /**
    * Removes the listener that stops this run when its caller's signal aborts.
    * At most one is armed at a time — queueing arms one, starting replaces it.
    */
   detachParentAbort?: () => void;
-  /**
-   * Present only while the record is "queued": resolves when it leaves the
-   * queue, started or aborted. `spawnAndWait` waits on this because a queued
-   * record has no `promise` yet. Always resolves, never rejects — a rejection
-   * would escape into the caller's tool `execute` and take down pi's whole
-   * Promise.all tool batch.
-   */
-  startGate?: Promise<void>;
   groupId?: string;
   joinMode?: JoinMode;
   /** Set when result was already consumed via get_subagent_result — suppresses completion notification. */
@@ -267,36 +218,14 @@ export interface AgentRecord {
    * Lifetime usage breakdown, accumulated via `message_end` events. Survives
    * compaction. Total = input + output + cacheWrite (cacheRead deliberately
    * excluded — see issue #38). Initialized to zeros at spawn.
-   *
-   * Includes every descendant's spend: `nested-tools.ts` folds a nested
-   * child's turns into all its ancestors, because the child itself is hidden
-   * from the surfaces that read this field.
    */
   lifetimeUsage: LifetimeUsage;
-  /**
-   * This agent's own turns only — `lifetimeUsage` minus its descendants. What
-   * the fleet list shows, since it gives nested children rows of their own and
-   * the rolled-up figure would count their spend twice.
-   */
+  /** Usage from this agent's turns, shown in the fleet list. */
   ownUsage: LifetimeUsage;
   /** Number of times this agent's session has compacted. Initialized to 0 at spawn. */
   compactionCount: number;
-  /**
-   * Whether this agent runs in the background. Tri-state, initialized at spawn
-   * from `SpawnOptions.isBackground` and flipped `false` → `true` (once, never
-   * back) by `sendToBackground`: `true` = background, `false` =
-   * foreground (has an inline Agent tool-result surface), `undefined` = the
-   * caller never declared it (e.g. a cross-extension RPC spawn, which is detached
-   * and has no inline surface). The widget's background-only filter keys off this
-   * — and excludes only explicit `false`, so `undefined` agents stay visible.
-   * Reliable across ALL spawn paths, unlike the UI-only `invocation` snapshot,
-   * which only the Agent-tool path populates.
-   */
-  isBackground?: boolean;
   /** Resolved spawn params, captured for UI display. Fixed at spawn time. */
   invocation?: AgentInvocation;
-  /** Nesting depth: top-level subagent = 1. */
-  depth?: number;
   /**
    * The validated `StructuredOutput` payload, as canonical JSON.
    *
@@ -308,23 +237,7 @@ export interface AgentRecord {
   structuredJson?: string;
   /** Whether the child needed the extra structured-output prompt. */
   structuredRetried?: boolean;
-  /** Parent agent ID for ownership-scoped nested controls. */
-  parentAgentId?: string;
-  /**
-   * The workflow run that owns this child, when a workflow spawned it.
-   *
-   * Owned the same way a nested child is owned by its parent: filtered out of
-   * every top-level surface, and outside the `maxConcurrent` pool. See
-   * `isTopLevelAgent`.
-   */
-  workflowId?: string;
-  /** Effective inherited nesting cap for this branch. */
-  maxSubagentDepth?: number;
-  /**
-   * Session id of the root (main) session this branch descends from. Nested
-   * spawns inherit it so their transcripts file under the same session
-   * directory as their ancestors' instead of the child session's own id.
-   */
+  /** Id of the main session that launched this agent. */
   rootSessionId?: string;
 }
 
@@ -355,7 +268,6 @@ export interface AgentInvocation {
   maxTurns?: number;
   isolated?: boolean;
   inheritContext?: boolean;
-  runInBackground?: boolean;
   isolation?: IsolationMode;
 }
 

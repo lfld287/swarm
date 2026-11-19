@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTestAgent } from "./helpers/boot-extension.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -99,6 +100,7 @@ describe("subagents:rpc:consume", () => {
       join(tmpDir, ".pi", "subagents.json"),
       JSON.stringify({ schedulingEnabled: false, outputTranscript: false }),
     );
+    writeTestAgent(tmpDir, "worker");
     process.chdir(tmpDir);
   });
 
@@ -131,9 +133,9 @@ describe("subagents:rpc:consume", () => {
     bus.on(`subagents:rpc:spawn:reply:${requestId}`, (reply: any) => { id = reply.data.id; });
     bus.emit("subagents:rpc:spawn", {
       requestId,
-      type: "general-purpose",
+      type: "worker",
       prompt: "go",
-      options: { description: "task #1", isBackground: true },
+      options: { description: "task #1" },
     });
     await vi.waitFor(() => expect(id).toBeTruthy());
     return id;

@@ -20,10 +20,9 @@ vi.mock("../src/agent-runner.js", async () => {
 import { resumeAgent, runAgent } from "../src/agent-runner.js";
 import { registerAgents } from "../src/agent-types.js";
 import subagentsExtension from "../src/index.js";
-import { addUsage } from "../src/usage.js";
-import { ctx, flush, type Hermetic, hermeticDir, makePi } from "./helpers/boot-extension.js";
+import { ctx, flush, type Hermetic, hermeticDir, makePi, testAgentFile } from "./helpers/boot-extension.js";
 
-/** Drive one foreground run that spends `usage` on a single assistant message. */
+/** Drive one background run that spends `usage` on a single assistant message. */
 function runSpending(usage: { input: number; output: number; cacheWrite: number; cacheRead?: number; cost?: number }) {
   vi.mocked(runAgent).mockImplementation(async (_c: any, _t: any, _p: any, opts: any) => {
     opts.onAssistantUsage?.(usage);
@@ -41,7 +40,7 @@ function runSpendingNothing() {
 const spawn = (tools: Map<string, any>, toolCallId: string | undefined) =>
   tools.get("Agent").execute(
     toolCallId,
-    { prompt: "go", description: "spend", subagent_type: "general-purpose", run_in_background: false },
+    { prompt: "go", description: "spend", subagent_type: "worker" },
     undefined, undefined, ctx(),
   );
 
@@ -49,7 +48,7 @@ describe("reporting subagent usage back to the parent session", () => {
   let hermetic: Hermetic;
 
   function boot(settings: Record<string, unknown>) {
-    hermetic = hermeticDir({ settings });
+    hermetic = hermeticDir({ agentFiles: { worker: testAgentFile("worker") }, settings });
     const { pi, tools, lifecycle } = makePi();
     subagentsExtension(pi);
     return { pi, tools, lifecycle };
@@ -122,7 +121,7 @@ describe("reporting subagent usage back to the parent session", () => {
     expect(result.usage).toBeUndefined();
     // And the text result is untouched — the setting must not change what the
     // orchestrator reads.
-    expect(result.content[0].text).toContain("Agent completed");
+    expect(result.content[0].text).toContain("Agent ID:");
   });
 
   it("defaults to off", async () => {
@@ -183,7 +182,7 @@ describe("reporting subagent usage back to the parent session", () => {
 
     const started = await tools.get("Agent").execute(
       "tc-2",
-      { prompt: "more", description: "spend", subagent_type: "general-purpose", resume: id, run_in_background: true },
+      { prompt: "more", description: "spend", subagent_type: "worker", resume: id },
       undefined, undefined, ctx(),
     );
     await flush();
@@ -197,43 +196,6 @@ describe("reporting subagent usage back to the parent session", () => {
     expect(reported).toHaveLength(1);
     expect(reported[0].cost.total).toBe(0.002);
     expect(reported[0].totalTokens).toBe(10);
-  });
-
-  it("counts a nested child's spend once, on the top-level agent's report", async () => {
-    // Nested agents are hidden from every reporting surface, so their spend is
-    // deliberately double-booked into every ancestor record to stay visible
-    // somewhere. Anything that summed those records would bill this session
-    // twice for one child message — which is why the pool is fed from the
-    // manager hook instead.
-    const { pi, tools } = boot({ reportUsage: true });
-    let nested = false;
-
-    vi.mocked(runAgent).mockImplementation(async (_c: any, _t: any, _p: any, opts: any) => {
-      opts.onAssistantUsage?.({ input: 100, output: 50, cacheWrite: 0, cost: 0.01 });
-      if (!nested) {
-        nested = true;
-        // `nestedRuntime` is exactly what nested-tools.ts is handed: the real
-        // manager and the id of the agent that owns the child.
-        const { manager, parentAgentId } = opts.nestedRuntime;
-        const childId = manager.spawn(pi, ctx(), "general-purpose", "sub", {
-          description: "nested",
-          isBackground: false,
-          parentAgentId,
-          // The ancestor walk, verbatim from nested-tools.
-          onAssistantUsage: (u: any) => addUsage(manager.getRecord(parentAgentId).lifetimeUsage, u),
-        });
-        await manager.getRecord(childId).promise;
-      }
-      return { responseText: "done", session: { dispose: vi.fn(), messages: [] } as any, aborted: false, steered: false };
-    });
-
-    const result = await spawn(tools, "tc-1");
-
-    // Two messages, one per agent — not three, which is what summing the
-    // double-booked parent record would have produced.
-    expect(nested).toBe(true);
-    expect(result.usage.totalTokens).toBe(300);
-    expect(result.usage.cost.total).toBeCloseTo(0.02, 10);
   });
 
   it("reports what a resume spends, not only the first run", async () => {
@@ -253,7 +215,7 @@ describe("reporting subagent usage back to the parent session", () => {
     const id = pi.events.emit.mock.calls.find((c: any[]) => c[0] === "subagents:completed")?.[1]?.id;
     const result = await tools.get("Agent").execute(
       "tc-2",
-      { prompt: "more", description: "spend", subagent_type: "general-purpose", resume: id, run_in_background: false },
+      { prompt: "more", description: "spend", subagent_type: "worker", resume: id },
       undefined, undefined, ctx(),
     );
 
@@ -329,7 +291,7 @@ describe("reporting subagent usage back to the parent session", () => {
       // `Symbol.for("pi-subagents:manager")` registry.
       const { pi, tools } = boot({});
       vi.mocked(runAgent).mockImplementation(async (_c: any, _t: any, _p: any, opts: any) => {
-        const session = { dispose: vi.fn(), messages: [], sessionManager: { getSessionFile: () => "/sessions/child.jsonl" } } as any;
+        const session = { dispose: vi.fn(), subscribe: vi.fn(() => () => {}), messages: [], sessionManager: { getSessionFile: () => "/sessions/child.jsonl" } } as any;
         opts.onSessionCreated?.(session);
         return { responseText: "verdict: FAIL", session, aborted: false, steered: false, structuredJson: '{"verdict":"FAIL"}' };
       });
@@ -376,17 +338,16 @@ describe("reporting subagent usage back to the parent session", () => {
 
       await tools.get("Agent").execute(
         "tc-1",
-        { prompt: "go", description: "spend", subagent_type: "general-purpose", thinking: "low", run_in_background: false },
+        { prompt: "go", description: "spend", subagent_type: "worker", thinking: "low" },
         undefined, undefined, ctx(),
       );
 
       const events = usageEvents(pi);
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({
-        type: "general-purpose",
+        type: "worker",
         description: "spend",
         thinking: "low",
-        depth: 1,
         usage: {
           input: 100,
           output: 50,
@@ -397,9 +358,7 @@ describe("reporting subagent usage back to the parent session", () => {
         },
       });
       expect(typeof events[0].id).toBe("string");
-      // A top-level agent has no owner: the keys are absent, not `undefined`.
-      expect(events[0]).not.toHaveProperty("parentAgentId");
-      expect(events[0]).not.toHaveProperty("workflowId");
+      // A top-level agent has no owner: the key is absent, not `undefined`.
     });
 
     it("is emitted regardless of reportUsage", async () => {
@@ -423,39 +382,28 @@ describe("reporting subagent usage back to the parent session", () => {
     });
 
     it("carries the requested level when the agent did not get it", async () => {
-      // A workflow asking for `minimal` on a model whose lowest level is `low`
+      // An agent asking for `minimal` on a model whose lowest level is `low`
       // runs at `low`; the ledger should be able to say so, not relabel it.
       const { pi, tools } = boot({});
-      let spawned = false;
-      vi.mocked(runAgent).mockImplementation(async (_c: any, _t: any, _p: any, opts: any) => {
-        if (spawned) {
-          // The child's session reports the level pi actually gave it; that is
-          // where the manager detects the clamp and keeps the request.
-          opts.onSessionCreated?.({
-            dispose: vi.fn(),
-            subscribe: vi.fn(() => () => {}),
-            messages: [],
-            model: { provider: "anthropic", id: "claude-haiku-4-5" },
-            thinkingLevel: "low",
-          });
-        }
+      vi.mocked(runAgent).mockImplementation(async (_c: any, _t: any, prompt: string, opts: any) => {
+        opts.onSessionCreated?.({
+          dispose: vi.fn(),
+          subscribe: vi.fn(() => () => {}),
+          messages: [],
+          model: { provider: "anthropic", id: "claude-haiku-4-5" },
+          thinkingLevel: "low",
+        });
         opts.onAssistantUsage?.({ input: 10, output: 5, cacheWrite: 0, cost: 0.001 });
-        if (!spawned) {
-          spawned = true;
-          const { manager, parentAgentId } = opts.nestedRuntime;
-          const childId = manager.spawn(pi, ctx(), "general-purpose", "sub", {
-            description: "clamped",
-            isBackground: false,
-            parentAgentId,
-            depth: 2,
-            invocation: { thinking: "minimal" },
-          });
-          await manager.getRecord(childId).promise;
-        }
-        return { responseText: "done", session: { dispose: vi.fn(), messages: [] } as any, aborted: false, steered: false };
+        return { responseText: prompt, session: { dispose: vi.fn(), messages: [] } as any, aborted: false, steered: false };
       });
 
-      await spawn(tools, "tc-1");
+      for (const [description, thinking] of [["clamped", "minimal"], ["spend", "low"]]) {
+        await tools.get("Agent").execute(
+          description,
+          { prompt: "go", description, subagent_type: "worker", thinking },
+          undefined, undefined, ctx(),
+        );
+      }
 
       const events = usageEvents(pi);
       expect(events.find((e: any) => e.description === "clamped")).toMatchObject({ thinking: "low", requestedThinking: "minimal" });
@@ -485,7 +433,7 @@ describe("reporting subagent usage back to the parent session", () => {
 
       await tools.get("Agent").execute(
         "tc-1",
-        { prompt: "go", description: "spend", subagent_type: "general-purpose", run_in_background: true },
+        { prompt: "go", description: "spend", subagent_type: "worker" },
         undefined, undefined, ctx(),
       );
       await lifecycle.get("session_shutdown")?.({}, ctx());
@@ -499,39 +447,6 @@ describe("reporting subagent usage back to the parent session", () => {
       expect(names.at(-1)).toBe("subagents:disposed");
     });
 
-    it("reports a nested child's message once, as the child's own", async () => {
-      // The lifecycle events never fire for a nested child, and its spend is
-      // double-booked into the ancestor records. A ledger summing this event
-      // must see each message exactly once, under the agent that spent it.
-      const { pi, tools } = boot({});
-      let nested = false;
-
-      vi.mocked(runAgent).mockImplementation(async (_c: any, _t: any, _p: any, opts: any) => {
-        opts.onAssistantUsage?.({ input: 100, output: 50, cacheWrite: 0, cost: 0.01 });
-        if (!nested) {
-          nested = true;
-          const { manager, parentAgentId } = opts.nestedRuntime;
-          const childId = manager.spawn(pi, ctx(), "general-purpose", "sub", {
-            description: "nested",
-            isBackground: false,
-            parentAgentId,
-            depth: 2,
-            onAssistantUsage: (u: any) => addUsage(manager.getRecord(parentAgentId).lifetimeUsage, u),
-          });
-          await manager.getRecord(childId).promise;
-        }
-        return { responseText: "done", session: { dispose: vi.fn(), messages: [] } as any, aborted: false, steered: false };
-      });
-
-      await spawn(tools, "tc-1");
-
-      const events = usageEvents(pi);
-      expect(events).toHaveLength(2);
-      const child = events.find((e: any) => e.description === "nested");
-      const parent = events.find((e: any) => e.description === "spend");
-      expect(child).toMatchObject({ depth: 2, parentAgentId: parent.id });
-      expect(events.reduce((sum: number, e: any) => sum + e.usage.cost.total, 0)).toBeCloseTo(0.02, 10);
-    });
   });
 
   it("reports spend through get_subagent_result too", async () => {

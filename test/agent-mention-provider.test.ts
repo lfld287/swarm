@@ -296,14 +296,6 @@ describe("delegation to pi's provider", () => {
     expect(await suggest(provider, "mail@ex")).toBe(FILE_SUGGESTIONS);
   });
 
-  it("never claims nested children — nothing can address them", async () => {
-    const current = builtIn();
-    const nested = record({ handle: "explore", parentAgentId: "parent-1" });
-    const provider = createMentionProvider(current, () => mentionRoster(managerWith(nested), []), () => true);
-
-    expect(await suggest(provider, "@ex")).toBe(FILE_SUGGESTIONS);
-  });
-
   it("delegates everything while mentions are disabled", async () => {
     const current = builtIn();
     const provider = createMentionProvider(current, () => mentionRoster(managerWith(record({ handle: "explore" })), []), () => false);

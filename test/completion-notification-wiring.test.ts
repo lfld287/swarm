@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as AgentRunnerModule from "../src/agent-runner.js";
+import { type Hermetic, hermeticDir, testAgentFile } from "./helpers/boot-extension.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof AgentRunnerModule>("../src/agent-runner.js");
@@ -93,14 +94,19 @@ async function spawnBackground(
     {
       prompt: "reply done",
       description,
-      subagent_type: "general-purpose",
-      run_in_background: true,
+      subagent_type: "worker",
     },
     undefined,
     undefined,
     makeHeadlessCtx(),
   );
 }
+
+let project: Hermetic;
+beforeEach(() => {
+  project = hermeticDir({ agentFiles: { worker: testAgentFile("worker") } });
+});
+afterEach(() => project.restore());
 
 describe("background completion notification wiring", () => {
   afterEach(() => {

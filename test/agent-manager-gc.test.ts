@@ -52,7 +52,7 @@ describe("AgentManager — record GC", () => {
       steered: false,
     } as any);
     manager ??= new AgentManager();
-    const id = manager.spawn(mockPi, mockCtx, "X", prompt, { description: prompt, isBackground: true });
+    const id = manager.spawn(mockPi, mockCtx, "X", prompt, { description: prompt });
     await manager.getRecord(id)!.promise;
     return { id, record: manager.getRecord(id)! };
   }
@@ -112,7 +112,7 @@ describe("AgentManager — record GC", () => {
     // guard prevents, and `completedAt` on a running record is meaningless.
     vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}));
     manager = new AgentManager();
-    const id = manager.spawn(mockPi, mockCtx, "X", "live", { description: "live", isBackground: true });
+    const id = manager.spawn(mockPi, mockCtx, "X", "live", { description: "live" });
     const record = manager.getRecord(id)!;
     expect(record.status).toBe("running");
     record.completedAt = Date.now() - 10 * TEN_MINUTES;
@@ -128,8 +128,8 @@ describe("AgentManager — record GC", () => {
   it("never evicts a queued agent", async () => {
     vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}));
     manager = new AgentManager(undefined, 1);
-    manager.spawn(mockPi, mockCtx, "X", "holder", { description: "holder", isBackground: true });
-    const queuedId = manager.spawn(mockPi, mockCtx, "X", "waiter", { description: "waiter", isBackground: true });
+    manager.spawn(mockPi, mockCtx, "X", "holder", { description: "holder" });
+    const queuedId = manager.spawn(mockPi, mockCtx, "X", "waiter", { description: "waiter" });
     const queued = manager.getRecord(queuedId)!;
     expect(queued.status).toBe("queued");
     queued.completedAt = Date.now() - 10 * TEN_MINUTES;
@@ -175,7 +175,7 @@ describe("AgentManager — tombstones outliving the GC", () => {
       steered: false,
     } as any);
     manager ??= new AgentManager();
-    const id = manager.spawn(mockPi, mockCtx, type, prompt, { description: prompt, isBackground: true });
+    const id = manager.spawn(mockPi, mockCtx, type, prompt, { description: prompt });
     const record = manager.getRecord(id)!;
     await record.promise;
     record.sessionFile = sessionFile;
@@ -213,7 +213,7 @@ describe("AgentManager — tombstones outliving the GC", () => {
     await evictable("Explore", "first", "/sessions/first.jsonl");
     await vi.advanceTimersByTimeAsync(TICK);
 
-    const id = manager.spawn(mockPi, mockCtx, "Explore", "second", { description: "second", isBackground: true });
+    const id = manager.spawn(mockPi, mockCtx, "Explore", "second", { description: "second" });
 
     expect(manager.getRecord(id)!.handle).toBe("explore-2");
     // ...and `@explore` still means the conversation you can resume.
@@ -227,7 +227,7 @@ describe("AgentManager — tombstones outliving the GC", () => {
     // Give the live agent the tombstone's name directly: the collision this
     // guards against is resolution order, not allocation.
     vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}));
-    const id = manager.spawn(mockPi, mockCtx, "Explore", "live", { description: "live", isBackground: true });
+    const id = manager.spawn(mockPi, mockCtx, "Explore", "live", { description: "live" });
     manager.getRecord(id)!.handle = "explore";
 
     const resolved = manager.resolveMention("explore");
@@ -256,29 +256,16 @@ describe("AgentManager — tombstones outliving the GC", () => {
     // numbered handle, so the spawn takes the tombstone's names verbatim.
     manager = new AgentManager();
     await evictable("Explore", "first", "/sessions/first.jsonl");
-    manager.spawn(mockPi, mockCtx, "Explore", "second", { description: "second", isBackground: true });
+    manager.spawn(mockPi, mockCtx, "Explore", "second", { description: "second" });
     await vi.advanceTimersByTimeAsync(TICK);
 
     vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}));
     const id = manager.spawn(mockPi, mockCtx, "Explore", "resumed", {
       description: "first",
-      isBackground: true,
       reclaim: { handle: "explore", alias: "auth-audit" },
     } as any);
 
     expect(manager.getRecord(id)).toMatchObject({ handle: "explore", alias: "auth-audit" });
-  });
-
-  it("ignores a reclaim on a nested child, which has no name to hold", async () => {
-    manager = new AgentManager();
-    vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}));
-    const id = manager.spawn(mockPi, mockCtx, "Explore", "child", {
-      description: "child",
-      parentAgentId: "parent-id",
-      reclaim: { handle: "explore", alias: "auth-audit" },
-    } as any);
-
-    expect(manager.getRecord(id)).toMatchObject({ handle: undefined, alias: undefined });
   });
 
   it("stops answering a name once its tombstone is dropped", async () => {
@@ -302,7 +289,7 @@ describe("AgentManager — tombstones outliving the GC", () => {
     manager.dropTombstone("explore");
 
     vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}));
-    const id = manager.spawn(mockPi, mockCtx, "Explore", "next", { description: "next", isBackground: true });
+    const id = manager.spawn(mockPi, mockCtx, "Explore", "next", { description: "next" });
 
     expect(manager.getRecord(id)!.handle).toBe("explore");
   });

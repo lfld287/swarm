@@ -36,12 +36,10 @@
  *
  * ONE PARAMETERIZED RUNNER
  * ------------------------
- * The same `runPrintMode()` covers built-in agent types, `.pi/agents/*.md` /
- * `.agents/agents/*.md` frontmatter agents, and inline-instruction agents — the difference is purely
- * what you register in `beforeRun` and which `subagent_type` the `Agent` call
- * names. See `test/subagents-print-mode-e2e.test.ts` for usage.
+ * `runPrintMode()` loads custom agent definitions from the isolated project.
+ * See `test/subagents-print-mode-e2e.test.ts` for usage.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +66,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { AgentRecord } from "../../src/types.js";
 import { fauxModelBackend } from "./faux-model-backend.js";
 import { getModel, registerFauxProvider } from "./pi-ai.js";
 
@@ -80,7 +79,7 @@ const MANAGER_KEY = Symbol.for("pi-subagents:manager");
 export interface ManagerHandle {
   waitForAll(): Promise<void>;
   hasRunning(): boolean;
-  getRecord(id: string): unknown;
+  getRecord(id: string): AgentRecord | undefined;
 }
 
 /** A faux reply in any convenient shape; normalized to an AssistantMessage. */
@@ -106,6 +105,8 @@ export interface RunPrintModeOptions {
    * removes. Pass a fixtures dir to make project custom agents discoverable.
    */
   cwd?: string;
+  /** Explicit role files to install in the test project's .pi/agents directory. */
+  agentFiles?: Record<string, string>;
   /** Parent host system prompt. Default: a minimal orchestrator prompt. */
   systemPrompt?: string;
   /**
@@ -153,8 +154,8 @@ export interface RunPrintModeOptions {
    * it picks up whatever your `pi` install is logged into, no env required.
    *
    * `false` pins the run faux even under `PI_E2E_LIVE=1`. A suite whose whole
-   * point is a scripted response — a provider error with no content, a
-   * three-level delegation chain — has nothing to gain from a real model and
+   * point is a scripted response — for example, a provider error with no
+   * content — has nothing to gain from a real model and
    * cannot assert anything once one answers instead. Without this, running the
    * documented pre-publish smoke turns those suites red on a healthy tree,
    * which is worse than not running them: it hides a real regression in noise.
@@ -184,21 +185,17 @@ export interface PrintModeRun {
 // Faux scripting helpers
 // --------------------------------------------------------------------------
 
-/**
- * Build an `Agent` tool call for a faux assistant turn. `subagent_type` defaults
- * to "general-purpose"; everything else is passed straight through as tool args.
- */
+/** Build an `Agent` tool call naming an explicit custom role. */
 export function agentCall(
   args: {
     prompt: string;
     description: string;
-    subagent_type?: string;
-    run_in_background?: boolean;
+    subagent_type: string;
     [k: string]: unknown;
   },
   opts?: { id?: string },
 ): ToolCall {
-  return fauxToolCall("Agent", { subagent_type: "general-purpose", ...args }, opts);
+  return fauxToolCall("Agent", args, opts);
 }
 
 function resolveReply(
@@ -211,8 +208,7 @@ function resolveReply(
 /**
  * Whether a faux call comes from a subagent session rather than the main one.
  * Keyed on the `<active_agent name="…"/>` tag every subagent system prompt
- * carries (`buildAgentPrompt`). Not on the `Agent` tool: `general-purpose`
- * children have it too, since they may delegate.
+ * carries (`buildAgentPrompt`).
  */
 export function isSubagentContext(context: Context): boolean {
   return getCurrentSystemPrompt(context.messages).includes("<active_agent name=");
@@ -279,6 +275,13 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
   // --- working dir (own it only if we created it) ---
   const ownsCwd = options.cwd == null;
   const cwd = options.cwd ?? mkdtempSync(join(tmpdir(), "subagents-print-"));
+  if (options.agentFiles) {
+    const dir = join(cwd, ".pi", "agents");
+    mkdirSync(dir, { recursive: true });
+    for (const [name, content] of Object.entries(options.agentFiles)) {
+      writeFileSync(join(dir, `${name}.md`), content);
+    }
+  }
 
   // chdir into cwd: the extension discovers project custom agents from process.cwd()
   // (not ctx.cwd), and re-reads them on every Agent invocation — so a custom agent
@@ -550,19 +553,32 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
 }
 
 /**
- * Extract the text of every `Agent` tool result in a session's history. This is
- * the real end-to-end observable: for a foreground spawn it contains the child's
- * own output; for a background spawn it's the "started in background" envelope.
+ * Extract `Agent` acceptance receipts, not child output, from session history.
  */
 export function agentToolResults(session: AgentSession): string[] {
   return toolResultsNamed(session, "Agent");
 }
 
-/**
- * The same, for any tool by name — `SubagentWorkflow`'s launch envelope is read
- * exactly the way an `Agent` spawn's is, and duplicating the walk to say so
- * would leave two copies to keep in step with pi's message shape.
- */
+/** Resolve the accepted ID back to its terminal record; fail if the child didn't settle. */
+export function settledAgent(run: PrintModeRun, index = 0): AgentRecord {
+  const receipt = agentToolResults(run.parentSession)[index] ?? "";
+  const id = /Agent ID: (\S+)/.exec(receipt)?.[1];
+  const record = id && run.manager?.getRecord(id);
+  if (!record || record.status === "queued" || record.status === "running") {
+    throw new Error(`No settled agent for receipt: ${receipt}`);
+  }
+  return record;
+}
+
+export function completionText(session: AgentSession): string {
+  return session.messages.flatMap(message => {
+    if (message.role !== "custom" || message.customType !== "subagent-notification") return [];
+    return typeof message.content === "string" ? [message.content]
+      : message.content.flatMap(block => block.type === "text" ? [block.text] : []);
+  }).join("\n");
+}
+
+/** Extract the result text for a tool by name. */
 export function toolResultsNamed(session: AgentSession, toolName: string): string[] {
   const out: string[] = [];
   for (const msg of session.messages) {
@@ -579,7 +595,7 @@ export function toolResultsNamed(session: AgentSession, toolName: string): strin
 /**
  * All text across the whole conversation — assistant turns, user/nudge messages,
  * and every tool result. Use this to assert a child's output *materialized
- * somewhere* (a foreground tool result, a get_subagent_result result, a held
+ * somewhere* (a get_subagent_result result or a held
  * nudge), rather than only in the parent's final message which may summarize it.
  */
 export function conversationText(session: AgentSession): string {
@@ -608,19 +624,14 @@ export function invokedToolNames(session: AgentSession): string[] {
 
 /**
  * The arguments of every `Agent` tool call the model actually made — lets a live
- * smoke assert which feature was exercised (e.g. `run_in_background`,
+ * smoke assert which feature was exercised (e.g. `resume`,
  * `subagent_type`) rather than just that *some* spawn happened.
  */
 export function agentToolCalls(session: AgentSession): Array<Record<string, unknown>> {
   return toolCallsNamed(session, "Agent");
 }
 
-/**
- * The same, for any tool by name. A live workflow smoke has to read the
- * `SubagentWorkflow` call's own arguments — whether it carried `script` or
- * `name` is the difference between two different code paths, and a model that
- * merely *narrates* running a workflow leaves no call here at all.
- */
+/** Extract the arguments of actual calls to the named tool. */
 export function toolCallsNamed(
   session: AgentSession,
   toolName: string,

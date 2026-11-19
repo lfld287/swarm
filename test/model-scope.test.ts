@@ -1,8 +1,3 @@
-// src/model-scope.ts had no test file. Its `error` verdict was reachable only
-// indirectly, through one nested-tools case; the `warn` verdict — the whole
-// reason the policy is a three-way split rather than a boolean — was never
-// exercised at all.
-//
 // The split is the point: a model the ORCHESTRATOR picked at runtime is refused,
 // because it can pick again; a model the USER pinned in frontmatter (or that was
 // inherited from the parent) only warns, because refusing it would break every

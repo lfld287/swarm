@@ -4,14 +4,11 @@ import type { AgentManager } from "../src/agent-manager.js";
 import { registerAgents } from "../src/agent-types.js";
 import type { AgentConfig, AgentRecord, ViewerMarkdownMode } from "../src/types.js";
 import { type AgentActivity, getDisplayName } from "../src/ui/agent-widget.js";
-import type { ViewerBackgroundAction } from "../src/ui/conversation-viewer.js";
 import {
   FleetList,
   type FleetUICtx,
-  type FleetWorkflow,
   formatFleetElapsed,
   formatFleetTokens,
-  formatProgressBar,
 } from "../src/ui/fleet-list.js";
 
 // ---- Key sequences (see node_modules/@earendil-works/pi-tui/dist/keys.js) ----
@@ -80,12 +77,6 @@ interface Harness {
   fleet: FleetList;
   ui: FleetUICtx;
   manager: AgentManager;
-  /** Replace the workflow runs the list sees, and re-render. */
-  setWorkflows: (list: FleetWorkflow[]) => void;
-  /** Ids the list asked the extension to open, in order. */
-  openedWorkflows: () => string[];
-  /** Settle the workflow dialog the list last opened; flushes the close microtask. */
-  closeWorkflowDialog: () => Promise<void>;
   /** Notices the fleet pushed through `ui.notify`, as `level: message`. */
   notices: () => string[];
   /** The overlay component (a real ConversationViewer) once one is opened. */
@@ -109,27 +100,12 @@ interface Harness {
   widgetTui: { requestRender(): void; focusedComponent?: unknown };
 }
 
-function makeWorkflow(over: Partial<FleetWorkflow> = {}): FleetWorkflow {
-  return {
-    id: "wf_abc123",
-    name: "audit-src",
-    status: "running",
-    doneCount: 1,
-    totalCount: 3,
-    phase: "",
-    startedAt: Date.now() - 32_000,
-    tokens: 26_400,
-    ...over,
-  };
-}
-
 function harness(
   agents: AgentRecord[],
   opts: {
     tuiMode?: TuiMode;
     viewerMarkdown?: () => ViewerMarkdownMode;
     onViewerMarkdown?: (mode: ViewerMarkdownMode) => void;
-    backgroundAction?: (record: AgentRecord, notify: (message: string) => void) => ViewerBackgroundAction;
   } = {},
 ): Harness {
   const notices: string[] = [];
@@ -165,24 +141,12 @@ function harness(
   };
 
   const manager = fakeManager(agents);
-  const fleet = new FleetList(manager, new Map(), undefined, opts.viewerMarkdown, opts.onViewerMarkdown, undefined, opts.backgroundAction);
+  const fleet = new FleetList(manager, new Map(), undefined, opts.viewerMarkdown, opts.onViewerMarkdown, undefined);
   fleet.setUICtx(ui);
-  let workflows: FleetWorkflow[] = [];
-  const openedWorkflows: string[] = [];
-  let closeWorkflowDialog: (() => void) | undefined;
-  fleet.setWorkflowSource(() => workflows, id => {
-    openedWorkflows.push(id);
-    // The real opener hands back the dialog's promise, so the list can put the
-    // cursor back when it closes. Held open here until a test resolves it.
-    return new Promise<void>(resolve => { closeWorkflowDialog = () => resolve(); });
-  });
   fleet.update();
 
   return {
     fleet,
-    setWorkflows: (list: FleetWorkflow[]) => { workflows = list; fleet.update(); },
-    openedWorkflows: () => openedWorkflows,
-    closeWorkflowDialog: async () => { closeWorkflowDialog?.(); await Promise.resolve(); },
     ui,
     manager,
     notices: () => notices,
@@ -528,97 +492,54 @@ describe("FleetList rendering", () => {
   });
 });
 
-describe("FleetList nested agents", () => {
+describe("FleetList flat roster", () => {
   /** Visible rows of a render, each trimmed of the stats column. */
   function rows(h: Harness): string[] {
     return h.render(200).map(plain).filter(l => /○|●/.test(l)).map(l => l.replace(/\s{2,}\d+s · .*$/, ""));
   }
 
-  it("indents nested children under their parent, siblings earliest-launched first", () => {
+  it("lists agents in flat launch order", () => {
     const h = harness([
-      makeRecord({ id: "top", description: "parent", startedAt: 1000 }),
-      makeRecord({ id: "late", description: "late child", parentAgentId: "top", startedAt: 3000 }),
-      makeRecord({ id: "early", description: "early child", parentAgentId: "top", startedAt: 2000 }),
-      makeRecord({ id: "other", description: "second top", startedAt: 4000 }),
+      makeRecord({ id: "top", description: "first", startedAt: 1000 }),
+      makeRecord({ id: "late", description: "third", startedAt: 3000 }),
+      makeRecord({ id: "early", description: "second", startedAt: 2000 }),
+      makeRecord({ id: "other", description: "fourth", startedAt: 4000 }),
     ]);
     const agent = getDisplayName("general-purpose");
     expect(rows(h)).toEqual([
       "  ● main",
-      `  ○ ${agent}  parent`,
-      `  ├ ○ ${agent}  early child`,
-      `  └ ○ ${agent}  late child`,
-      `  ○ ${agent}  second top`,
+      `  ○ ${agent}  first`,
+      `  ○ ${agent}  second`,
+      `  ○ ${agent}  third`,
+      `  ○ ${agent}  fourth`,
     ]);
   });
 
-  it("continues the rail under a non-last child and leaves it blank under the last", () => {
-    const h = harness([
-      makeRecord({ id: "top", description: "parent", startedAt: 1000 }),
-      makeRecord({ id: "c1", description: "first", parentAgentId: "top", startedAt: 2000 }),
-      makeRecord({ id: "g1", description: "grandchild a", parentAgentId: "c1", startedAt: 3000 }),
-      makeRecord({ id: "c2", description: "second", parentAgentId: "top", startedAt: 4000 }),
-      makeRecord({ id: "g2", description: "grandchild b", parentAgentId: "c2", startedAt: 5000 }),
-    ]);
-    const agent = getDisplayName("general-purpose");
-    expect(rows(h).slice(1)).toEqual([
-      `  ○ ${agent}  parent`,
-      `  ├ ○ ${agent}  first`,
-      `  │ └ ○ ${agent}  grandchild a`,
-      `  └ ○ ${agent}  second`,
-      `    └ ○ ${agent}  grandchild b`,
-    ]);
-  });
-
-  it("keeps a viewed child listed after its parent would have dropped out", () => {
-    // A parent settling stops its children, so both finish together; the child
-    // a reader is viewing stays listed, and so must the row it hangs from.
+  it("keeps only the viewed agent listed after the finished linger expires", () => {
     const done = Date.now() - 60_000;
     const agents = [
-      makeRecord({ id: "top", description: "parent", startedAt: 1000 }),
-      makeRecord({ id: "kid", description: "the child", parentAgentId: "top", startedAt: 2000 }),
+      makeRecord({ id: "top", description: "first", startedAt: 1000 }),
+      makeRecord({ id: "kid", description: "viewed agent", startedAt: 2000 }),
     ];
     const h = harness(agents);
     h.press(DOWN);
     h.press(DOWN);
     h.press(DOWN);
-    h.press(ENTER); // view the child
+    h.press(ENTER); // view the second agent
     agents[0] = { ...agents[0], status: "completed", completedAt: done } as AgentRecord;
     agents[1] = { ...agents[1], status: "completed", completedAt: done } as AgentRecord;
     const rendered = h.render(200).map(plain).join("\n");
-    expect(rendered).toContain("parent");
-    expect(rendered).toContain("the child");
+    expect(rendered).not.toContain("first");
+    expect(rendered).toContain("viewed agent");
   });
 
-  it("drops a child whose parent is not listed", () => {
-    const h = harness([
-      makeRecord({ id: "gone", description: "finished parent", status: "completed", completedAt: Date.now() - 60_000 }),
-      makeRecord({ id: "orphan", description: "orphan child", parentAgentId: "gone" }),
-      makeRecord({ id: "live", description: "live agent" }),
-    ]);
-    const rendered = h.render().map(plain).join("\n");
-    expect(rendered).toContain("live agent");
-    expect(rendered).not.toContain("orphan child");
-  });
-
-  it("keeps a workflow's agents and their children out of the agent rows", () => {
-    const h = harness([
-      makeRecord({ id: "a1", description: "mine" }),
-      makeRecord({ id: "w1", description: "workflow agent", workflowId: "wf_abc123" }),
-      makeRecord({ id: "w1c", description: "workflow grandchild", parentAgentId: "w1" }),
-    ]);
-    const rendered = h.render().map(plain).join("\n");
-    expect(rendered).toContain("mine");
-    expect(rendered).not.toContain("workflow agent");
-    expect(rendered).not.toContain("workflow grandchild");
-  });
-
-  it("navigates into a child row and opens the child's own conversation", () => {
-    const child = makeRecord({ id: "kid", description: "the child", parentAgentId: "top", startedAt: 2000 });
-    const h = harness([makeRecord({ id: "top", description: "parent", startedAt: 1000 }), child]);
+  it("opens the selected agent's conversation", () => {
+    const child = makeRecord({ id: "kid", description: "viewed agent", startedAt: 2000 });
+    const h = harness([makeRecord({ id: "top", description: "first", startedAt: 1000 }), child]);
     h.press(DOWN); // main
-    h.press(DOWN); // parent
-    h.press(DOWN); // child
-    expect(h.render(200).find(l => l.includes("the child"))).toContain("❯");
+    h.press(DOWN); // first agent
+    h.press(DOWN); // second agent
+    expect(h.render(200).find(l => l.includes("viewed agent"))).toContain("❯");
     h.press(ENTER);
     expect(h.overlayOpened()).toBe(true);
     h.overlayComponent()!.handleInput("\r");
@@ -627,31 +548,30 @@ describe("FleetList nested agents", () => {
     expect(h.manager.steer).toHaveBeenCalledWith("kid", "hi");
   });
 
-  it("shows each agent's own usage, not the total that folds in its children", () => {
+  it("shows each agent's own usage", () => {
     const h = harness([
       makeRecord({
-        id: "top", description: "parent", startedAt: 1000,
+        id: "top", description: "first", startedAt: 1000,
         lifetimeUsage: { input: 500_000, output: 0, cacheWrite: 0 },
         ownUsage: { input: 163_400, output: 0, cacheWrite: 0 },
       }),
       makeRecord({
-        id: "kid", description: "child", parentAgentId: "top", startedAt: 2000,
+        id: "kid", description: "second", startedAt: 2000,
         lifetimeUsage: { input: 336_600, output: 0, cacheWrite: 0 },
         ownUsage: { input: 336_600, output: 0, cacheWrite: 0 },
       }),
     ]);
     const lines = h.render(200).map(plain);
-    expect(lines.find(l => l.includes("parent"))).toContain("↓ 163.4k tokens");
-    expect(lines.find(l => l.includes("child"))).toContain("↓ 336.6k tokens");
+    expect(lines.find(l => l.includes("first"))).toContain("↓ 163.4k tokens");
+    expect(lines.find(l => l.includes("second"))).toContain("↓ 336.6k tokens");
   });
 
-  // A nested spawn inserts its row under the parent, mid-list. The cursor must
-  // stay on the agent it was on, or Enter opens (and steers, and stops) another.
-  it("keeps the cursor on its agent when a child row is inserted above it", () => {
+  // An agent can appear once its session is available, even if launched earlier.
+  it("keeps the cursor on its agent when a row appears above it", () => {
     const now = Date.now();
     const agents = [
-      makeRecord({ id: "A", description: "parent A", startedAt: now - 5000 }),
-      makeRecord({ id: "A1", description: "child one", parentAgentId: "A", startedAt: now - 4000 }),
+      makeRecord({ id: "A", description: "agent A", startedAt: now - 5000 }),
+      makeRecord({ id: "A1", description: "agent A1", startedAt: now - 4000 }),
       makeRecord({ id: "B", description: "agent B", startedAt: now - 3000 }),
     ];
     const h = harness(agents);
@@ -660,7 +580,7 @@ describe("FleetList nested agents", () => {
     const cursorRow = () => h.render(200).map(plain).find(l => l.startsWith("❯"));
     expect(cursorRow()).toContain("agent B");
 
-    agents.push(makeRecord({ id: "A2", description: "child two", parentAgentId: "A", startedAt: now - 1000 }));
+    agents.push(makeRecord({ id: "A2", description: "agent A2", startedAt: now - 3500 }));
     h.fleet.update();
     expect(cursorRow()).toContain("agent B");
 
@@ -673,12 +593,12 @@ describe("FleetList nested agents", () => {
   it("opens the cursor's agent even when the insert lands between ticks", () => {
     const now = Date.now();
     const agents = [
-      makeRecord({ id: "A", description: "parent A", startedAt: now - 5000 }),
+      makeRecord({ id: "A", description: "agent A", startedAt: now - 5000 }),
       makeRecord({ id: "B", description: "agent B", startedAt: now - 3000 }),
     ];
     const h = harness(agents);
     h.press(DOWN); h.press(DOWN); h.press(DOWN); // main, A, B
-    agents.push(makeRecord({ id: "A1", description: "child", parentAgentId: "A", startedAt: now - 1000 }));
+    agents.push(makeRecord({ id: "A1", description: "agent A1", startedAt: now - 4000 }));
     h.press(ENTER); // no update() since the insert
     expect((h.fleet as unknown as { viewingAgentId?: string }).viewingAgentId).toBe("B");
   });
@@ -705,8 +625,8 @@ describe("FleetList markers", () => {
     // `◯` renders oversized in many terminal fonts; #155 moved FleetView off
     // the Claude Code glyphs onto the pair the rest of the UI uses.
     const h = harness([
-      makeRecord({ id: "top", description: "parent", startedAt: 1000 }),
-      makeRecord({ id: "kid", description: "child", parentAgentId: "top", startedAt: 2000 }),
+      makeRecord({ id: "top", description: "first", startedAt: 1000 }),
+      makeRecord({ id: "kid", description: "second", startedAt: 2000 }),
     ]);
     h.press(DOWN);
     h.press(DOWN);
@@ -913,33 +833,6 @@ describe("FleetList overlay lifecycle", () => {
     expect(h.render().find(l => l.includes("three"))).not.toContain("❯");
   });
 
-  it("wires the viewer's b to the extension's action for that row, notifying through the session UI", () => {
-    const agents = [makeRecord({ id: "live", description: "the one" })];
-    const backgroundAction = vi.fn((record: AgentRecord, notify: (message: string) => void) => ({
-      available: () => true,
-      send: () => notify(`sent ${record.id}`),
-    }));
-    const h = harness(agents, { backgroundAction });
-    h.press(DOWN);  // activate (main)
-    h.press(DOWN);  // → the agent
-    h.press(ENTER); // open the conversation viewer
-
-    expect(backgroundAction).toHaveBeenCalledWith(agents[0], expect.any(Function));
-    h.overlayComponent()!.handleInput("b");
-    expect(h.notices()).toEqual(["info: sent live"]);
-  });
-
-  it("offers no b when the extension supplies no action", () => {
-    const agents = [makeRecord({ id: "live", description: "the one" })];
-    const h = harness(agents);
-    h.press(DOWN);
-    h.press(DOWN);
-    h.press(ENTER);
-
-    expect(() => h.overlayComponent()!.handleInput("b")).not.toThrow();
-    expect(h.notices()).toEqual([]);
-  });
-
   it("wires the viewer's steer composer to manager.steer with the agent id", () => {
     const agents = [makeRecord({ id: "live", description: "the one" })];
     const h = harness(agents);
@@ -1027,9 +920,8 @@ describe("FleetList cost display", () => {
 
   it("reads the record, so the figures do not change when the agent finishes", () => {
     // Spend used to come from the live activity tracker while an agent ran and
-    // from its record once the tracker was deleted. The two disagree: only the
-    // record carries a nested child's spend (nested-tools folds it into every
-    // ancestor), so the number jumped upward at completion.
+    // from its record once the tracker was deleted. Reading the record for both
+    // keeps those figures consistent.
     // The stale shape on purpose: an activity entry carrying figures of its own
     // is what the old fallback preferred, so a row that still renders the
     // record's numbers proves the tracker is no longer consulted for spend.
@@ -1048,9 +940,9 @@ describe("FleetList model display", () => {
   const SONNET: AgentRecord["invocation"] = { modelName: "sonnet 4.6", modelId: "anthropic/claude-sonnet-4-6", thinking: "high" };
 
   /** A fleet over one record (or `records`), with `showModel` read live from `state.on`. */
-  function mount(state: { on: boolean }, invocation: AgentRecord["invocation"] = SONNET, records = [makeRecord({ invocation })]) {
+  function mount(state: { on: boolean }, invocation: AgentRecord["invocation"] = SONNET, records = [makeRecord({ type: "Job", invocation })]) {
     // showModel is the last positional arg; the middle args take their defaults.
-    const fleet = new FleetList(fakeManager(records), new Map(), () => false, undefined, undefined, undefined, undefined, () => state.on);
+    const fleet = new FleetList(fakeManager(records), new Map(), () => false, undefined, undefined, undefined, () => state.on);
     let factory: any;
     fleet.setUICtx({
       setWidget: (_k: string, c: any) => { factory = c; },
@@ -1097,24 +989,24 @@ describe("FleetList model display", () => {
     const out = mount({ on: true }, {
       modelName: "haiku 4.5", requestedModel: "opus", thinking: "high", requestedThinking: "max",
     }).render(60);
-    expect(out).toContain("Agent  Sleep then report 1");
+    expect(out).toContain("Job  Sleep then report 1");
     expect(out).toContain("13.1k tokens");
     expect(out).not.toContain("(asked max)");
   });
 
-  it("names each nested row's own model after its tree prefix and description", () => {
+  it("names each row's model after its description", () => {
     const now = Date.now();
     const records = [
-      makeRecord({ id: "top", description: "parent", startedAt: now - 2000, invocation: SONNET }),
-      makeRecord({ id: "kid", description: "child", parentAgentId: "top", startedAt: now - 1000, invocation: { modelName: "haiku 4.5", thinking: "low" } }),
+      makeRecord({ type: "Job", id: "top", description: "first", startedAt: now - 2000, invocation: SONNET }),
+      makeRecord({ type: "Job", id: "kid", description: "second", startedAt: now - 1000, invocation: { modelName: "haiku 4.5", thinking: "low" } }),
     ];
-    const agent = getDisplayName("general-purpose");
+    const agent = getDisplayName("Job");
     const wide = plain(mount({ on: true }, undefined, records).render());
-    expect(wide).toContain(`○ ${agent}  parent · sonnet 4.6 · high`);
-    expect(wide).toContain(`  └ ○ ${agent}  child · haiku 4.5 · low`);
-    // Narrow: the indented child loses its model, never its rail or name.
+    expect(wide).toContain(`○ ${agent}  first · sonnet 4.6 · high`);
+    expect(wide).toContain(`  ○ ${agent}  second · haiku 4.5 · low`);
+    // Narrow: the row truncates the model before the name.
     const narrow = plain(mount({ on: true }, undefined, records).render(48));
-    expect(narrow).toContain(`  └ ○ ${agent}  child`);
+    expect(narrow).toContain(`  ○ ${agent}  second`);
     expect(narrow).not.toContain("haiku 4.5 · low");
   });
 
@@ -1127,229 +1019,24 @@ describe("FleetList model display", () => {
   });
 });
 
-/* ------------------------------------------------------------------------- *
- * Workflow runs
- * ------------------------------------------------------------------------- */
-
-describe("FleetList workflow rows", () => {
-  it("renders identically with no workflow source and an empty one", () => {
-    // The contract: a session without workflows behaves exactly as it did
-    // before they existed. Asserted as an equality rather than an absence, so
-    // a future change to the roster cannot quietly alter the agents-only path.
-    const withNone = harness([makeRecord({ id: "a1", description: "one" })]);
-    const before = withNone.render().join("\n");
-    expect(before).not.toContain("workflow");
-
-    const withEmpty = harness([makeRecord({ id: "a1", description: "one" })]);
-    withEmpty.setWorkflows([]);
-    expect(withEmpty.render().join("\n")).toBe(before);
-  });
-
-  it("navigates agents exactly as before when no run is present", () => {
+describe("FleetList agent navigation", () => {
+  it("opens a conversation when navigating to the second agent", () => {
     const h = harness([
-      makeRecord({ id: "a1", description: "one" }),
-      makeRecord({ id: "a2", description: "two" }),
+      makeRecord({ type: "Job", id: "a1", description: "one" }),
+      makeRecord({ type: "Job", id: "a2", description: "two" }),
     ]);
-    h.setWorkflows([]);
 
     expect(h.press(DOWN)?.consume).toBe(true);
     h.press(DOWN);
     h.press(DOWN);
     h.press(ENTER);
 
-    // The second agent, not a run and not `main`.
+    // The second agent, not `main`.
     expect(h.overlayOpened()).toBe(true);
-    expect(h.openedWorkflows()).toEqual([]);
-  });
-
-  it("clears the widget when the last run and the last agent both go", () => {
-    const h = harness([]);
-    h.setWorkflows([makeWorkflow()]);
-    expect(h.render().length).toBeGreaterThan(0);
-
-    h.setWorkflows([]);
-    expect(h.render()).toEqual([]);
-  });
-
-  it("lists a run above the agents, with its counts and stats", () => {
-    const h = harness([makeRecord({ id: "a1", description: "one" })]);
-    h.setWorkflows([makeWorkflow()]);
-
-    // Wide enough that the test theme's `<tag>` markup, which counts toward
-    // the width, does not truncate the row.
-    const rows = h.render(200).map(plain).filter(row => row.trim() !== "");
-    const run = rows.find(row => row.includes("audit-src"))!;
-    const agent = rows.findIndex(row => row.includes("one"));
-    // Labelled like an agent's type; 1/3 of 20 cells rounds to 7, and the count
-    // follows the bar rather than heading the flush-right stats.
-    expect(run).toContain(`○ workflow  audit-src  ${"▰".repeat(7)}${"▱".repeat(13)} 1/3 agents `);
-    expect(run).not.toContain("1/3 · ");
-    expect(run).toContain("26.4k tokens");
-    // A run owns most of the agents under it, so the container comes first.
-    expect(rows.findIndex(row => row.includes("audit-src"))).toBeLessThan(agent);
-  });
-
-  it("names the active phases after the count", () => {
-    const h = harness([]);
-    h.setWorkflows([makeWorkflow({ phase: "Reviewing (2/3)" })]);
-    const run = h.render(200).map(plain).find(row => row.includes("audit-src"))!;
-    expect(run).toContain("1/3 agents · Reviewing (2/3) ");
-  });
-
-  it("fills the bar completely on a finished single-agent run", () => {
-    const h = harness([]);
-    h.setWorkflows([makeWorkflow({ doneCount: 1, totalCount: 1 })]);
-    const out = h.render(200).map(plain).join("\n");
-    expect(out).toContain("▰".repeat(20));
-    expect(out).not.toContain("▱");
-    expect(out).toContain(`${"▰".repeat(20)} 1/1 agents `);
-  });
-
-
-  it("formatProgressBar scales done/total into 20 cells", () => {
-    const cells = (done: number, total: number) => {
-      const bar = formatProgressBar(done, total);
-      return [bar.filled.length, bar.empty.length];
-    };
-    expect(cells(0, 9)).toEqual([0, 20]);
-    expect(cells(8, 9)).toEqual([18, 2]);
-    expect(cells(9, 9)).toEqual([20, 0]);
-    // No agents scheduled yet: all empty, not NaN cells.
-    expect(cells(0, 0)).toEqual([0, 20]);
-    // A count that overshoots never draws past the bar.
-    expect(cells(12, 9)).toEqual([20, 0]);
-  });
-
-  it("hides the run's own agents — the run is the row that represents them", () => {
-    // A 40-agent fan-out would otherwise push every other agent off the list,
-    // and each child is already reachable inside the workflow dialog.
-    const h = harness([
-      makeRecord({ id: "a1", description: "mine" }),
-      makeRecord({ id: "w1", description: "the workflow's", workflowId: "wf_abc123" }),
-    ]);
-    h.setWorkflows([makeWorkflow()]);
-
-    const rendered = h.render().map(plain).join("\n");
-    expect(rendered).toContain("mine");
-    expect(rendered).toContain("audit-src");
-    expect(rendered).not.toContain("the workflow's");
-  });
-
-  it("moves into the list when the only row is a run", () => {
-    // The regression this guards: activation counted agents, so a session
-    // running nothing but a workflow rendered the row and then refused to
-    // move into it.
-    const h = harness([]);
-    h.setWorkflows([makeWorkflow({ id: "wf_only" })]);
-
-    // The first ↓ moves focus into the list and lands on `main`, as it always
-    // has; the second reaches the only other row.
-    expect(h.press(DOWN)?.consume, "↓ at an empty prompt has somewhere to go").toBe(true);
-    h.press(DOWN);
-    h.press(ENTER);
-
-    expect(h.openedWorkflows()).toEqual(["wf_only"]);
   });
 
   it("still does nothing at an empty prompt with no rows at all", () => {
     const h = harness([]);
     expect(h.press(DOWN)?.consume).toBeFalsy();
-  });
-
-  it("opens the selected run rather than a conversation viewer", () => {
-    const h = harness([makeRecord({ id: "a1", description: "one" })]);
-    h.setWorkflows([makeWorkflow({ id: "wf_pick" })]);
-
-    h.press(LEFT);
-    h.press(DOWN);
-    h.press(ENTER);
-
-    expect(h.openedWorkflows()).toEqual(["wf_pick"]);
-    // The workflow dialog owns its own overlay; the list must not open one.
-    expect(h.overlayOpened()).toBe(false);
-  });
-
-  const NOW = Date.now();
-
-  /** Open the second of two runs, leaving the inspector up. */
-  function openSecondRun() {
-    const h = harness([makeRecord({ id: "a1", description: "one" })]);
-    h.setWorkflows([
-      makeWorkflow({ id: "wf_a", name: "audit-src", startedAt: NOW - 30_000 }),
-      makeWorkflow({ id: "wf_b", name: "review-changes", startedAt: NOW - 20_000 }),
-    ]);
-    h.render();
-    h.press(LEFT);
-    h.press(DOWN);
-    h.press(DOWN);
-    expect(h.openedWorkflows()).toEqual([]);
-    h.press(ENTER);
-    expect(h.openedWorkflows()).toEqual(["wf_b"]);
-    return h;
-  }
-
-  it("keeps its hands off the keyboard while the inspector is up", () => {
-    // The list only stays out of an overlay's keys when it knows one is open.
-    // Focus alone is not enough: `editorHasFocus` reads unknowable focus as
-    // the editor's, which is exactly the state a fresh overlay leaves behind,
-    // and the list would then eat the arrow keys the dialog is waiting for.
-    const h = openSecondRun();
-
-    expect(h.press(DOWN)?.consume, "the dialog's keys are not the list's").toBeFalsy();
-    expect(h.press(ENTER)?.consume).toBeFalsy();
-    // And nothing moved behind it — one ENTER opened one run.
-    expect(h.openedWorkflows()).toEqual(["wf_b"]);
-  });
-
-  it("comes back to the same run when the inspector closes", async () => {
-    // Runs settle and start while the dialog is open, so the row the reader
-    // came from is not reliably where it was. The agent path re-finds its row
-    // by id for the same reason; a run has to be findable the same way.
-    const h = openSecondRun();
-
-    h.setWorkflows([
-      makeWorkflow({ id: "wf_a", name: "audit-src", startedAt: NOW - 30_000 }),
-      makeWorkflow({ id: "wf_new", name: "started-meanwhile", startedAt: NOW - 25_000 }),
-      makeWorkflow({ id: "wf_b", name: "review-changes", startedAt: NOW - 20_000 }),
-    ]);
-    await h.closeWorkflowDialog();
-
-    // Wide: the fake theme's markup tags count as visible text.
-    expect(h.render(200).find(l => l.includes("review-changes"))).toContain("❯");
-    expect(h.render(200).find(l => l.includes("started-meanwhile"))).not.toContain("❯");
-  });
-
-  it("still opens an agent's viewer when the selection is past the runs", () => {
-    const h = harness([makeRecord({ id: "a1", description: "one" })]);
-    h.setWorkflows([makeWorkflow()]);
-
-    h.press(LEFT);
-    h.press(DOWN);
-    h.press(DOWN);
-    h.press(ENTER);
-
-    expect(h.openedWorkflows()).toEqual([]);
-    expect(h.overlayOpened()).toBe(true);
-  });
-
-  it("drops a settled run once it stops lingering, and keeps a live one", () => {
-    const h = harness([]);
-    h.setWorkflows([
-      makeWorkflow({ id: "wf_old", name: "old", status: "completed", completedAt: Date.now() - 60 * 60_000 }),
-      makeWorkflow({ id: "wf_now", name: "now" }),
-    ]);
-
-    const rendered = h.render().map(plain).join("\n");
-    expect(rendered).toContain("now");
-    expect(rendered).not.toContain("old");
-  });
-
-  it("freezes a finished run's clock the way an agent's is frozen", () => {
-    const h = harness([]);
-    // Inside FINISHED_LINGER_MS, or the row would be gone before it could be read.
-    const completedAt = Date.now() - 1_000;
-    h.setWorkflows([makeWorkflow({ status: "completed", startedAt: completedAt - 12_000, completedAt })]);
-
-    expect(h.render().map(plain).join("\n")).toContain("12s");
   });
 });

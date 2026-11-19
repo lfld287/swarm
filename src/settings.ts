@@ -18,35 +18,6 @@ import type { AgentMentionMode, CacheRetentionSetting, JoinMode, ViewerMarkdownM
 export interface SubagentsSettings {
   maxConcurrent?: number;
   /**
-   * Max concurrent FOREGROUND (blocking) agents — `0` = unlimited, the default,
-   * which preserves the behaviour that has always applied: nothing bounded
-   * foreground work, and pi dispatches a message's tool calls through
-   * `Promise.all`, so an unqualified fan-out of blocking `Agent` calls runs all
-   * at once. Set it to bound that (#253 — on local models, parallel agents
-   * thrash the prompt cache).
-   *
-   * Deliberately independent of `maxConcurrent` rather than folded into it: a
-   * foreground agent blocks the parent anyway, so charging it to the background
-   * pool would let a saturated pool starve the main session of work it could
-   * have done itself.
-   *
-   * Bounds only spawns a caller is blocking on inline. Nested children are
-   * exempt — their parent is blocked awaiting them, so queueing a child behind
-   * its own parent would deadlock — and so are detached spawns from
-   * cross-extension RPC or `@handle` mentions, which block nobody and are
-   * documented to start immediately. Foreground `resume` is also outside the
-   * pool: it reuses an existing session and never reaches the spawn path, so
-   * several blocking resumes in one message can still exceed the limit.
-   */
-  maxConcurrentForeground?: number;
-  /**
-   * Cap on running nested children (outside workflows) — `0` = unlimited,
-   * default 10. A nested spawn over it is refused, not queued, and the parent
-   * is told to do the work itself (#352). Top-level and workflow agents neither
-   * count nor are refused.
-   */
-  maxConcurrentNested?: number;
-  /**
    * 0 = unlimited — the extension's single source of truth for that convention:
    * `normalizeMaxTurns()` in agent-runner.ts treats 0 → `undefined`, and the
    * `/agents` → Settings input prompt explicitly says "0 = unlimited".
@@ -54,23 +25,6 @@ export interface SubagentsSettings {
   defaultMaxTurns?: number;
   graceTurns?: number;
   defaultJoinMode?: JoinMode;
-  /**
-   * Whether a top-level `Agent` spawn that doesn't say runs detached.
-   * Defaults to `true`, following Claude Code, where the agent backgrounds
-   * unless the caller passes `run_in_background: false`. Set `false` to restore
-   * the previous behaviour, where an unqualified spawn blocked the turn and
-   * returned its result inline.
-   *
-   * Top-level only. Nested spawns (a subagent spawning its own) always default
-   * to foreground regardless of this setting — see `nested-tools.ts`, where a
-   * detached child would be killed by `abortOwnedChildren` when its parent
-   * settles, with no notification path to deliver its result.
-   *
-   * An explicit `run_in_background` on the call, or in the agent file's
-   * frontmatter, overrides this in both directions; the setting only decides
-   * what "unspecified" means.
-   */
-  backgroundByDefault?: boolean;
   /**
    * Master switch for the schedule subagent feature. Defaults to `true`.
    * When `false`: the `Agent` tool's `schedule` param + its guideline are
@@ -115,13 +69,6 @@ export interface SubagentsSettings {
    */
   strictAgentFiles?: boolean;
   /**
-   * When true, the three built-in default agents (general-purpose, Explore, Plan)
-   * are not registered at startup. User-defined agents from project/global custom
-   * agent dirs are completely unaffected — only the hardcoded DEFAULT_AGENTS are suppressed.
-   * Defaults to false.
-   */
-  disableDefaultAgents?: boolean;
-  /**
    * Which Agent tool description the LLM sees. "full" (default) is the rich
    * Claude Code-style prompt; "compact" is a ~75% smaller version (one-line
    * agent type list, terse usage notes) for small/local models where tool-spec
@@ -132,18 +79,6 @@ export interface SubagentsSettings {
    * next pi session.
    */
   toolDescriptionMode?: ToolDescriptionMode;
-  /**
-   * Where the SubagentWorkflow script reference reaches the model. "inline"
-   * (default) puts it in the tool description, where the model cannot skip it.
-   * "skill" saves about 4k tokens every session: one line points at the
-   * bundled `workflow-authoring` skill file by path instead, and the model has
-   * to choose to read it before writing a script — a model that does not
-   * writes the script without the reference. "deferred" keeps the tool out of
-   * the tool spec until pi's `tool_search` loads it, then carries the inline
-   * reference; it needs `tool_search` active. Read once at tool registration;
-   * applies on the next pi session.
-   */
-  workflowToolExposure?: WorkflowToolExposureMode;
   /**
    * Whether the Claude Code-style FleetView (the navigable main+subagents list
    * rendered below the editor) is shown. Defaults to `true`. Pure-UI: when off,
@@ -169,9 +104,9 @@ export interface SubagentsSettings {
    */
   agentMentions?: AgentMentionMode;
   /**
-   * Whether subagents persist their pi session by default, so `@handle`,
-   * `Agent({ resume })` and a workflow's `resume` can reopen an agent's
-   * conversation long after its in-memory record is gone.
+   * Whether subagents persist their pi session by default, so `@handle` and
+   * `Agent({ resume })` can reopen an agent's conversation long after its
+   * in-memory record is gone.
    * Defaults to `true`. Per-agent `persist_session:` frontmatter overrides it
    * in both directions. Turning it off restores the previous behaviour, where
    * a handle stops resolving roughly ten minutes after the agent finishes and
@@ -188,16 +123,7 @@ export interface SubagentsSettings {
    * session is never affected. Read at spawn.
    */
   cacheRetention?: CacheRetentionSetting;
-  /**
-   * Display mode for the persistent above-editor agent widget:
-   *   - `all`: show every agent (foreground + background).
-   *   - `background`: hide foreground agents — they already render inline as the
-   *     Agent tool result, so the widget would otherwise double-render them
-   *     (#118); everything else (background, queued, scheduled, RPC) stays.
-   *   - `off`: hide the widget entirely.
-   * Defaults to `background`. Pure-UI and applied live (toggling refreshes the
-   * widget).
-   */
+  /** Display all agents (default), or hide the above-editor widget. */
   widgetMode?: WidgetMode;
   /**
    * Project/global default for writing each subagent's `.output` transcript
@@ -234,46 +160,10 @@ export interface SubagentsSettings {
    */
   worktreeIsolation?: boolean;
   /**
-   * Master switch for scripted workflows. Defaults to `true`.
-   *
-   * Off is not a soft hide: the `SubagentWorkflow` tool is never registered, so
-   * the model is not told it exists and cannot call it, the `/agents`
-   * Workflows entry is hidden, and `--subagents-workflow-file` is refused.
-   *
-   * Absent is not the same as `true`. Unset means *auto*: on, but yielding to
-   * another extension that already offers a workflow tool, because two
-   * orchestrators in one tool spec is a worse default than none — the model
-   * has to guess which to call, and pays for both descriptions to find out.
-   * Setting it explicitly pins the answer in both directions: `true` keeps
-   * ours whatever else is loaded, `false` is off regardless. See
-   * `resolveWorkflowCollisions` in index.ts.
-   *
-   * Read once at extension init, before registration, so flipping it in
-   * `/agents → Settings` takes effect on the next pi session — the same
-   * contract `schedulingEnabled` has, and for the same reason: a tool spec is
-   * fixed once pi has it.
-   */
-  workflowsEnabled?: boolean;
-  /**
-   * Hard ceiling on nested subagent delegation, counted from the main session:
-   * main = 0, its subagents = 1, their children = 2. Defaults to `2`; `0` or `1`
-   * disables nesting project-wide. Read when a subagent session is built, so a
-   * change applies to agents started after it.
-   */
-  maxSubagentDepth?: number;
-  /**
    * Agent type substituted when a caller-supplied `subagent_type` doesn't
    * resolve to exactly one enabled agent (unknown, disabled, or ambiguous by
-   * case). Omitted keeps the historical `general-purpose` fallback; a type name
-   * routes those calls to that agent instead; `"none"` disables the fallback so
-   * dispatch fails closed with an error naming the available types.
-   *
-   * The boolean `false` is accepted as a spelling of `"none"`, because a boolean
-   * would otherwise be dropped as the wrong type and silently leave the
-   * PERMISSIVE default in place while the author believes strict dispatch is on
-   * — the wrong direction to fail for this setting. Every other value is an
-   * agent name, so a mistaken `"off"` fails loudly at dispatch rather than
-   * meaning one thing here and another in the resolver.
+   * case). Omitted, empty, and `"none"` all reject unresolvable agent types.
+   * A role name enables the fallback; legacy boolean `false` means `"none"`.
    */
   fallbackSubagent?: string;
   /**
@@ -302,7 +192,7 @@ export interface SubagentsSettings {
   reportUsage?: boolean;
   /**
    * Whether the subagent surfaces show an estimated dollar cost next to their
-   * token counts (widget, FleetView, conversation viewer, foreground results,
+   * token counts (widget, FleetView, conversation viewer,
    * completion notifications). Defaults to `false`. Applied live.
    *
    * Rendered as `~$0.0042` — the tilde marks it as pi's reported estimate
@@ -347,20 +237,6 @@ export interface SubagentsSettings {
    */
   packageAgents?: boolean | string[];
   /**
-   * The same gate for workflow scripts declared by installed pi packages
-   * (`pi.subagents.workflows`). Defaults to `true`.
-   *
-   * Deliberately separate from `packageAgents` rather than folded into it: an
-   * agent is markdown we hand to a model, a workflow is `.js` we execute. Both
-   * still sit below the package's own `extensions/`, which pi runs unsandboxed,
-   * so the default matches — but a user who wants package agents without package
-   * workflow scripts can have that without giving up either wholesale.
-   *
-   * No-op when `workflowsEnabled` is off: the tool is never registered, so there
-   * is nothing to resolve a workflow name against.
-   */
-  packageWorkflows?: boolean | string[];
-  /**
    * How much of the conversation viewer's transcript renders as Markdown.
    * Defaults to `assistant`. Applied live — the viewer's `m` key cycles this
    * same setting, so a choice made in the overlay persists like one made in
@@ -376,23 +252,17 @@ export interface SubagentsSettings {
 }
 
 export type ToolDescriptionMode = "full" | "compact" | "custom";
-export type WorkflowToolExposureMode = "skill" | "inline" | "deferred";
 
 /** Setter hooks used by applySettings to wire persisted values into in-memory state. */
 export interface SettingsAppliers {
   setMaxConcurrent: (n: number) => void;
-  setMaxConcurrentForeground: (n: number) => void;
-  setMaxConcurrentNested: (n: number) => void;
   setDefaultMaxTurns: (n: number) => void;
   setGraceTurns: (n: number) => void;
   setDefaultJoinMode: (mode: JoinMode) => void;
-  setBackgroundByDefault: (b: boolean) => void;
   setSchedulingEnabled: (b: boolean) => void;
   setScopeModels: (enabled: boolean) => void;
   setStrictAgentFiles: (b: boolean) => void;
-  setDisableDefaultAgents: (b: boolean) => void;
   setToolDescriptionMode: (mode: ToolDescriptionMode) => void;
-  setWorkflowToolExposure: (mode: WorkflowToolExposureMode) => void;
   setFleetView: (b: boolean) => void;
   setAgentMentions: (mode: AgentMentionMode) => void;
   setRememberAgents: (b: boolean) => void;
@@ -400,15 +270,12 @@ export interface SettingsAppliers {
   setWidgetMode: (mode: WidgetMode) => void;
   setOutputTranscript: (b: boolean) => void;
   setWorktreeIsolation: (b: boolean) => void;
-  setWorkflowsEnabled: (b: boolean) => void;
-  setMaxSubagentDepth: (n: number) => void;
   setFallbackSubagent: (v: string | undefined) => void;
   setReportUsage: (b: boolean) => void;
   setShowCost: (b: boolean) => void;
   setShowModel: (b: boolean) => void;
   setViewerMarkdown: (mode: ViewerMarkdownMode) => void;
   setPackageAgents: (gate: boolean | string[]) => void;
-  setPackageWorkflows: (gate: boolean | string[]) => void;
 }
 
 /** Emit callback — a subset of `pi.events.emit` to keep helpers testable. */
@@ -416,8 +283,6 @@ export type SettingsEmit = (event: string, payload: unknown) => void;
 
 const VALID_JOIN_MODES: ReadonlySet<string> = new Set<JoinMode>(["async", "group", "smart"]);
 const VALID_TOOL_DESCRIPTION_MODES: ReadonlySet<string> = new Set<ToolDescriptionMode>(["full", "compact", "custom"]);
-const VALID_WORKFLOW_TOOL_EXPOSURE_MODES: ReadonlySet<string> = new Set<WorkflowToolExposureMode>(["skill", "inline", "deferred"]);
-const VALID_WIDGET_MODES: ReadonlySet<string> = new Set<WidgetMode>(["all", "background", "off"]);
 const VALID_VIEWER_MARKDOWN_MODES: ReadonlySet<string> = new Set<ViewerMarkdownMode>(["off", "assistant", "all"]);
 const VALID_AGENT_MENTION_MODES: ReadonlySet<string> = new Set<AgentMentionMode>(["model", "direct", "off"]);
 const VALID_CACHE_RETENTIONS: ReadonlySet<string> = new Set<CacheRetentionSetting>(["inherit", "none", "short", "long"]);
@@ -428,12 +293,11 @@ const VALID_CACHE_RETENTIONS: ReadonlySet<string> = new Set<CacheRetentionSettin
 const MAX_CONCURRENT_CEILING = 1024;
 const MAX_TURNS_CEILING = 10_000;
 const GRACE_TURNS_CEILING = 1_000;
-const SUBAGENT_DEPTH_CEILING = 16;
 
 /** The settings typed as whole numbers. */
 export type NumericSettingKey =
-  | "maxConcurrent" | "maxConcurrentForeground" | "maxConcurrentNested"
-  | "defaultMaxTurns" | "graceTurns" | "maxSubagentDepth";
+  | "maxConcurrent"
+  | "defaultMaxTurns" | "graceTurns";
 
 export interface NumericBounds { min: number; max: number }
 
@@ -441,15 +305,12 @@ export interface NumericBounds { min: number; max: number }
  * The accepted range of each number setting, inclusive. Loading drops a value
  * outside it, and `/agents` → Settings refuses to type one, so a value the menu
  * saves always survives a restart. A floor of 0 is where 0 is meaningful:
- * "unlimited" for the foreground/nested caps and max turns, "nesting off" for depth.
+ * "unlimited" for max turns.
  */
 export const NUMERIC_SETTING_BOUNDS: Readonly<Record<NumericSettingKey, NumericBounds>> = {
   maxConcurrent: { min: 1, max: MAX_CONCURRENT_CEILING },
-  maxConcurrentForeground: { min: 0, max: MAX_CONCURRENT_CEILING },
-  maxConcurrentNested: { min: 0, max: MAX_CONCURRENT_CEILING },
   defaultMaxTurns: { min: 0, max: MAX_TURNS_CEILING },
   graceTurns: { min: 1, max: GRACE_TURNS_CEILING },
-  maxSubagentDepth: { min: 0, max: SUBAGENT_DEPTH_CEILING },
 };
 
 /** A typed `/agents → Settings` row: its id is the setting it writes. */
@@ -459,40 +320,31 @@ export const isNumericSettingKey = (id: string): id is NumericSettingKey => Obje
  * The value each setting has when no settings file sets it, as the session
  * snapshot reports it — `/agents` → Settings resets a row to this once Del has
  * removed the key from every file. Every key is listed; `undefined` marks one
- * that is unset by default (fallback = general-purpose, workflows and package
- * gates on, and workflows still free to yield to another extension's tool).
+ * that is unset by default (no fallback, package agents on).
  * `test/settings-defaults.test.ts` checks it against a boot with no files.
  */
 export const SETTING_DEFAULTS: { readonly [K in keyof Required<SubagentsSettings>]: SubagentsSettings[K] } = {
   maxConcurrent: 10,
-  maxConcurrentForeground: 0,
-  maxConcurrentNested: 10,
   defaultMaxTurns: 0,
   graceTurns: 5,
   defaultJoinMode: "smart",
-  backgroundByDefault: true,
   schedulingEnabled: true,
   scopeModels: false,
   strictAgentFiles: false,
-  disableDefaultAgents: false,
   toolDescriptionMode: "full",
-  workflowToolExposure: "inline",
   fleetView: true,
   agentMentions: "model",
   rememberAgents: true,
   cacheRetention: "inherit",
-  widgetMode: "background",
+  widgetMode: "all",
   outputTranscript: true,
   worktreeIsolation: true,
-  workflowsEnabled: undefined,
-  maxSubagentDepth: 2,
   fallbackSubagent: undefined,
   reportUsage: false,
   showCost: false,
   showModel: false,
   viewerMarkdown: "assistant",
   packageAgents: undefined,
-  packageWorkflows: undefined,
 };
 
 /**
@@ -526,9 +378,6 @@ function sanitize(raw: unknown): SubagentsSettings {
   if (typeof r.defaultJoinMode === "string" && VALID_JOIN_MODES.has(r.defaultJoinMode)) {
     out.defaultJoinMode = r.defaultJoinMode as JoinMode;
   }
-  if (typeof r.backgroundByDefault === "boolean") {
-    out.backgroundByDefault = r.backgroundByDefault;
-  }
   if (typeof r.schedulingEnabled === "boolean") {
     out.schedulingEnabled = r.schedulingEnabled;
   }
@@ -538,14 +387,8 @@ function sanitize(raw: unknown): SubagentsSettings {
   if (typeof r.strictAgentFiles === "boolean") {
     out.strictAgentFiles = r.strictAgentFiles;
   }
-  if (typeof r.disableDefaultAgents === "boolean") {
-    out.disableDefaultAgents = r.disableDefaultAgents;
-  }
   if (typeof r.toolDescriptionMode === "string" && VALID_TOOL_DESCRIPTION_MODES.has(r.toolDescriptionMode)) {
     out.toolDescriptionMode = r.toolDescriptionMode as ToolDescriptionMode;
-  }
-  if (typeof r.workflowToolExposure === "string" && VALID_WORKFLOW_TOOL_EXPOSURE_MODES.has(r.workflowToolExposure)) {
-    out.workflowToolExposure = r.workflowToolExposure as WorkflowToolExposureMode;
   }
   if (typeof r.fleetView === "boolean") {
     out.fleetView = r.fleetView;
@@ -563,9 +406,8 @@ function sanitize(raw: unknown): SubagentsSettings {
   if (typeof r.cacheRetention === "string" && VALID_CACHE_RETENTIONS.has(r.cacheRetention)) {
     out.cacheRetention = r.cacheRetention as CacheRetentionSetting;
   }
-  if (typeof r.widgetMode === "string" && VALID_WIDGET_MODES.has(r.widgetMode)) {
-    out.widgetMode = r.widgetMode as WidgetMode;
-  }
+  if (r.widgetMode === "all" || r.widgetMode === "background") out.widgetMode = "all";
+  if (r.widgetMode === "off") out.widgetMode = "off";
   if (typeof r.outputTranscript === "boolean") {
     out.outputTranscript = r.outputTranscript;
   }
@@ -584,22 +426,12 @@ function sanitize(raw: unknown): SubagentsSettings {
   if (typeof r.viewerMarkdown === "string" && VALID_VIEWER_MARKDOWN_MODES.has(r.viewerMarkdown)) {
     out.viewerMarkdown = r.viewerMarkdown as ViewerMarkdownMode;
   }
-  if (typeof r.workflowsEnabled === "boolean") {
-    out.workflowsEnabled = r.workflowsEnabled;
-  }
   const packageAgents = sanitizePackageGate(r.packageAgents);
   if (packageAgents !== undefined) out.packageAgents = packageAgents;
-  const packageWorkflows = sanitizePackageGate(r.packageWorkflows);
-  if (packageWorkflows !== undefined) out.packageWorkflows = packageWorkflows;
   if (r.fallbackSubagent === false) {
-    // The only non-string spelling worth accepting: a boolean would otherwise be
-    // dropped, silently leaving the PERMISSIVE default in place. Every string is
-    // an agent name except the `none` sentinel, which the resolver recognizes —
-    // so a mistaken "off" fails loudly at dispatch instead of meaning something
-    // different here than it does there.
     out.fallbackSubagent = NO_FALLBACK;
-  } else if (typeof r.fallbackSubagent === "string" && r.fallbackSubagent.trim()) {
-    out.fallbackSubagent = r.fallbackSubagent.trim();
+  } else if (typeof r.fallbackSubagent === "string") {
+    out.fallbackSubagent = r.fallbackSubagent.trim() || NO_FALLBACK;
   }
   return out;
 }
@@ -716,22 +548,14 @@ export function saveSettings(
 /** Apply persisted settings to the in-memory state via caller-supplied setters. */
 export function applySettings(s: SubagentsSettings, appliers: SettingsAppliers): void {
   if (typeof s.maxConcurrent === "number") appliers.setMaxConcurrent(s.maxConcurrent);
-  if (typeof s.maxConcurrentForeground === "number") {
-    appliers.setMaxConcurrentForeground(s.maxConcurrentForeground);
-  }
-  if (typeof s.maxConcurrentNested === "number") appliers.setMaxConcurrentNested(s.maxConcurrentNested);
   if (typeof s.defaultMaxTurns === "number") appliers.setDefaultMaxTurns(s.defaultMaxTurns);
   if (typeof s.graceTurns === "number") appliers.setGraceTurns(s.graceTurns);
-  if (typeof s.maxSubagentDepth === "number") appliers.setMaxSubagentDepth(s.maxSubagentDepth);
   if (typeof s.fallbackSubagent === "string") appliers.setFallbackSubagent(s.fallbackSubagent);
   if (s.defaultJoinMode) appliers.setDefaultJoinMode(s.defaultJoinMode);
-  if (typeof s.backgroundByDefault === "boolean") appliers.setBackgroundByDefault(s.backgroundByDefault);
   if (typeof s.schedulingEnabled === "boolean") appliers.setSchedulingEnabled(s.schedulingEnabled);
   if (typeof s.scopeModels === "boolean") appliers.setScopeModels(s.scopeModels);
   if (typeof s.strictAgentFiles === "boolean") appliers.setStrictAgentFiles(s.strictAgentFiles);
-  if (typeof s.disableDefaultAgents === "boolean") appliers.setDisableDefaultAgents(s.disableDefaultAgents);
   if (s.toolDescriptionMode) appliers.setToolDescriptionMode(s.toolDescriptionMode);
-  if (s.workflowToolExposure) appliers.setWorkflowToolExposure(s.workflowToolExposure);
   if (typeof s.fleetView === "boolean") appliers.setFleetView(s.fleetView);
   if (s.agentMentions) appliers.setAgentMentions(s.agentMentions);
   if (typeof s.rememberAgents === "boolean") appliers.setRememberAgents(s.rememberAgents);
@@ -743,9 +567,7 @@ export function applySettings(s: SubagentsSettings, appliers: SettingsAppliers):
   if (typeof s.showCost === "boolean") appliers.setShowCost(s.showCost);
   if (typeof s.showModel === "boolean") appliers.setShowModel(s.showModel);
   if (s.viewerMarkdown) appliers.setViewerMarkdown(s.viewerMarkdown);
-  if (typeof s.workflowsEnabled === "boolean") appliers.setWorkflowsEnabled(s.workflowsEnabled);
   if (s.packageAgents !== undefined) appliers.setPackageAgents(s.packageAgents);
-  if (s.packageWorkflows !== undefined) appliers.setPackageWorkflows(s.packageWorkflows);
 }
 
 /**
@@ -774,6 +596,8 @@ export function applyAndEmitLoaded(
   cwd: string = process.cwd(),
 ): SubagentsSettings {
   const settings = loadSettings(cwd);
+  // Unlike a partial apply from the Settings menu, booting starts a new session.
+  if (settings.fallbackSubagent === undefined) appliers.setFallbackSubagent(undefined);
   applySettings(settings, appliers);
   emit("subagents:settings_loaded", { settings });
   return settings;

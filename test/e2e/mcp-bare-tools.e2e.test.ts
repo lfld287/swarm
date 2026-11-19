@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/pi-ai";
 import { fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentCall, agentToolResults, type PrintModeRun, routeBySession, runPrintMode } from "../helpers/print-mode-runner.js";
+import { agentCall, type PrintModeRun, routeBySession, runPrintMode, settledAgent } from "../helpers/print-mode-runner.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -69,7 +69,6 @@ describe("bare mcp__ entries in tools: (real pi MCP, stdio server, faux model)",
           subagent_type: "mcp-test",
           description: "mcp",
           prompt: "Call the MCP tool.",
-          run_in_background: false,
         }),
         parentFinal: "Reported.",
         subagent: (ctx: Context) => {
@@ -82,7 +81,9 @@ describe("bare mcp__ entries in tools: (real pi MCP, stdio server, faux model)",
       }),
     });
 
-    return agentToolResults(run.parentSession)[0] ?? "";
+    const record = settledAgent(run);
+    expect(record.status).toBe("completed");
+    return record.result ?? "";
   }
 
   it("calls the named MCP tool and is refused the server's other tool", async () => {

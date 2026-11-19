@@ -16,6 +16,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTestAgent } from "./helpers/boot-extension.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -80,7 +81,7 @@ async function spawnCompletedBackgroundAgent(tools: Map<string, any>): Promise<s
   });
   const spawn = await tools.get("Agent").execute(
     "tc-spawn",
-    { prompt: "go", description: "Review monero_en.rs in depth", subagent_type: "general-purpose", run_in_background: true },
+    { prompt: "go", description: "Review monero_en.rs in depth", subagent_type: "worker" },
     undefined,
     undefined,
     ctx(),
@@ -110,6 +111,7 @@ describe("issue #108: unread completed background agents survive session events"
     prevCwd = process.cwd();
     mkdirSync(join(tmpDir, ".pi"), { recursive: true });
     writeFileSync(join(tmpDir, ".pi", "subagents.json"), JSON.stringify({ schedulingEnabled: false }));
+    writeTestAgent(tmpDir, "worker");
     process.chdir(tmpDir);
   });
 

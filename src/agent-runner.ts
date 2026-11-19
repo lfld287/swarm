@@ -21,21 +21,19 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getMemoryToolNames, getReadOnlyMemoryToolNames, getToolNamesForType } from "./agent-types.js";
+import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getMemoryToolNames, getReadOnlyMemoryToolNames, getToolNamesForType, unavailableAgentTypeMessage } from "./agent-types.js";
 import { getCacheRetention, installCacheRetention } from "./cache-retention.js";
 import { runInChildSessionContext } from "./child-context.js";
 import { buildParentContext, extractText } from "./context.js";
 import { deniedToolNames } from "./custom-agents.js";
-import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
+import type { CompiledSchema } from "./json-schema.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
-import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager } from "./nested-tools.js";
 import { buildAgentPrompt, inheritableParentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
 import { createStructuredCapture, createStructuredOutputTool, structuredRetryPrompt } from "./structured-output.js";
 import type { SubagentType, ThinkingLevel } from "./types.js";
 import type { LifetimeUsage } from "./usage.js";
-import type { CompiledSchema } from "./workflow/json-schema.js";
 
 /**
  * Tool names registered by THIS extension. Single source of truth so the
@@ -45,7 +43,6 @@ import type { CompiledSchema } from "./workflow/json-schema.js";
  */
 export const SUBAGENT_TOOL_NAMES = {
   AGENT: "Agent",
-  WORKFLOW: "SubagentWorkflow",
   GET_RESULT: "get_subagent_result",
   STEER: "steer_subagent",
 } as const;
@@ -272,20 +269,12 @@ export function installExtensionToolScope(
     narrowing: Map<string, Set<string>>;
     /** Bare `mcp__` entries from `tools:`; undefined leaves MCP tools to the rules above. */
     mcpToolPatterns: string[] | undefined;
-    /**
-     * Injected `customTools` to keep active regardless of the built-in list.
-     *
-     * Two kinds arrive here and they are blocked for different reasons: opt-in
-     * nested-delegation tools share EXCLUDED_TOOL_NAMES' names, and
-     * StructuredOutput is simply not a built-in, so neither survives a `keep`
-     * seeded from `toolNames`.
-     */
-    readmitToolNames: Set<string>;
-    /** Receives the scope check the child's nested-call gate extension applies. */
-    nestedCallGate: NestedCallGate;
+    /** Structured output tool supplied by this call's response schema, if any. */
+    structuredToolNames: Set<string>;
+    toolScopeGate: ToolScopeGate;
   },
 ): void {
-  const { loader, toolNames, disallowedSet, extNames, narrowing, mcpToolPatterns, readmitToolNames, nestedCallGate } =
+  const { loader, toolNames, disallowedSet, extNames, narrowing, mcpToolPatterns, structuredToolNames, toolScopeGate } =
     ctx;
 
   // The names allowed right now. Mirrors the `ext:` opt-in flip: when any `ext:`
@@ -322,11 +311,7 @@ export function installExtensionToolScope(
       }
     }
     for (const name of EXCLUDED_TOOL_NAMES) keep.delete(name);
-    // Injected tools are legitimately active for this agent — re-admit them so
-    // the renarrow keeps them in the active set and beforeToolCall doesn't
-    // block them. Already vetted against `disallowed_tools` by the caller,
-    // which is the only place that knows which kind may be taken back.
-    for (const name of readmitToolNames) keep.add(name);
+    for (const name of structuredToolNames) keep.add(name);
     return keep;
   };
 
@@ -335,7 +320,7 @@ export function installExtensionToolScope(
   // `defaultActive: false`, as `--tools` does.
   const named = new Set([
     ...toolNames,
-    ...readmitToolNames,
+    ...structuredToolNames,
     ...[...narrowing.values()].flatMap((s) => [...s]),
     ...(mcpToolPatterns ?? []).filter((p) => !p.includes("*")),
   ]);
@@ -373,7 +358,7 @@ export function installExtensionToolScope(
     if (event.type === "turn_end") renarrow();
   });
 
-  nestedCallGate.allows = (name) => inScope().has(name);
+  toolScopeGate.allows = (name) => inScope().has(name);
 
   const priorBeforeToolCall = session.agent.beforeToolCall;
   session.agent.beforeToolCall = async (context, signal) => {
@@ -388,7 +373,7 @@ export function installExtensionToolScope(
 }
 
 /** Set once the child's tool scope is installed; until then the gate admits everything. */
-type NestedCallGate = { allows?: (name: string) => boolean };
+type ToolScopeGate = { allows?: (name: string) => boolean };
 
 /**
  * Inline extension that applies the subagent's tool scope to calls a tool makes
@@ -399,7 +384,7 @@ type NestedCallGate = { allows?: (name: string) => boolean };
  */
 const SCOPE_GATE_NAME = "pi-subagents-scope";
 
-function scopeGateExtension(gate: NestedCallGate): InlineExtension {
+function scopeGateExtension(gate: ToolScopeGate): InlineExtension {
   return {
     name: SCOPE_GATE_NAME,
     hidden: true,
@@ -520,22 +505,6 @@ export interface RunOptions {
    * under the type's *current* definition, not the one the original run used.
    */
   resumeSessionFile?: string;
-  /**
-   * True when another agent spawned this one. Only top-level agents get a
-   * handle, so only they can be reopened by name — which is the whole reason
-   * `rememberAgents` persists a session at all. A nested run's transcript would
-   * be unreachable by anything, so it stays in memory unless its own
-   * frontmatter asks otherwise.
-   */
-  nested?: boolean;
-  /**
-   * True when a workflow run spawned this agent. Its final text is the value
-   * `agent()` resolves to rather than a report a person reads, and the prompt
-   * says so — but only when `structuredOutput` is unset, since that child
-   * already has a `StructuredOutput` tool to answer through and two competing
-   * "this is how you return your answer" instructions is worse than one.
-   */
-  workflow?: boolean;
   /** Override working directory (e.g. for worktree isolation). */
   cwd?: string;
   /**
@@ -591,16 +560,9 @@ export interface RunOptions {
   structuredOutput?: CompiledSchema;
   /**
    * Tools to deny this one spawn, on top of the agent definition's own
-   * `disallowedTools`. Set by the workflow host, for `agent({ disallowedTools })`.
+   * `disallowedTools`.
    */
   disallowedTools?: string[];
-  /** Runtime bridge for opt-in child-safe nested delegation. */
-  nestedRuntime?: {
-    manager: NestedAgentManager;
-    parentAgentId: string;
-    depth: number;
-    maxSubagentDepth?: number;
-  };
 }
 
 export interface RunResult {
@@ -812,6 +774,7 @@ export async function runAgent(
 ): Promise<RunResult> {
   const config = getConfig(type);
   const agentConfig = getAgentConfig(type);
+  if (!config || !agentConfig) throw new Error(unavailableAgentTypeMessage(type));
 
   // Resolve working directory: worktree override > parent cwd
   const effectiveCwd = options.cwd ?? ctx.cwd;
@@ -828,7 +791,6 @@ export async function runAgent(
   // Build prompt extras (memory, skill preloading)
   const extras: PromptExtras = {};
   if (options.worktreeBase) extras.worktreeBase = options.worktreeBase;
-  if (options.workflow && !options.structuredOutput) extras.workflowChild = true;
 
   // Resolved here, not by each caller: mention and RPC spawns pass no `isolated`,
   // and the agent file's value must hold on every path.
@@ -875,53 +837,7 @@ export async function runAgent(
     }
   }
 
-  // Nested delegation tools (opt-in, ownership-scoped). Empty unless the agent
-  // set `allowed_subagents` and a nestedRuntime was provided — and never when
-  // isolated. Their names collide with EXCLUDED_TOOL_NAMES by design, so the
-  // scoping below re-admits them explicitly (registry deny + active-set narrow).
-  // Decided before the prompt is built, which says so when the agent delegates.
-  const effectiveMaxDepth = options.nestedRuntime?.maxSubagentDepth ?? getMaxSubagentDepth();
-  // At (or past) the cap this agent can never spawn, so it can never own a child
-  // to fetch from or steer either — inject nothing rather than three tools whose
-  // every call is an error. This is also what makes `maxSubagentDepth` 0/1 mean
-  // "nesting off" instead of "nesting always fails".
-  const nestedRuntime = options.nestedRuntime && options.nestedRuntime.depth < effectiveMaxDepth
-    ? options.nestedRuntime
-    : undefined;
-  // A workflow agent running the built-in general-purpose (what an untyped
-  // agent() gets) does not delegate: Claude Code's `workflow-subagent` drops the
-  // Agent tool, and the workflow script is what fans out. A custom agent's own
-  // `allowed_subagents` still applies.
-  const builtinInWorkflow = options.workflow === true && agentConfig?.isDefault === true;
-  const nestedTools = agentConfig?.allowedSubagents && nestedRuntime && !isolated && !builtinInWorkflow
-    ? createNestedSubagentTools({
-        manager: nestedRuntime.manager,
-        pi: options.pi,
-        parentAgentId: nestedRuntime.parentAgentId,
-        depth: nestedRuntime.depth,
-        maxSubagentDepth: effectiveMaxDepth,
-        allowedSubagents: agentConfig.allowedSubagents,
-        configCwd,
-      })
-    : [];
-  const nestedToolNames = new Set(nestedTools.map(tool => tool.name));
-  // Only where the built-in general-purpose can actually spawn — not in a
-  // workflow, at the depth cap, isolated, or with `Agent` disallowed.
-  if (agentConfig?.isDefault && nestedToolNames.has("Agent") && !disallowedSet?.has("Agent")) {
-    extras.delegationGuideline = true;
-  }
-
-  // Build system prompt from agent config
-  let systemPrompt: string;
-  if (agentConfig) {
-    systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras);
-  } else {
-    // Unknown type fallback: spread the canonical general-purpose config (defensive —
-    // unreachable in practice since index.ts resolves unknown types before calling runAgent).
-    const fallback = DEFAULT_AGENTS.get("general-purpose");
-    if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`);
-    systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras);
-  }
+  const systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras);
 
   // When skills is string[], we've already preloaded them into the prompt.
   // Still pass noSkills: true since we don't need the skill loader to load them again.
@@ -1003,7 +919,7 @@ export async function runAgent(
       : Object.assign(SettingsManager.create(configCwd, agentDir, { projectTrusted }), {
           isProjectTrusted: () => false,
         });
-  const nestedCallGate: NestedCallGate = {};
+  const toolScopeGate: ToolScopeGate = {};
 
   const loader = new DefaultResourceLoader({
     settingsManager,
@@ -1017,7 +933,7 @@ export async function runAgent(
       { name: "tool-search", factory: createToolSearchExtension(), builtin: true, replaceable: true },
       { name: "mcp", factory: createMcpExtension(), builtin: true, replaceable: true },
       // Under `noExtensions` the static allowlist gates the registry itself.
-      ...(noExtensions ? [] : [scopeGateExtension(nestedCallGate)]),
+      ...(noExtensions ? [] : [scopeGateExtension(toolScopeGate)]),
     ],
     // Mirrors pi's CLI: `--no-mcp` keeps MCP out of subagents too, and `--no-extensions`
     // keeps all the built-ins out. Discovered extensions still follow `extensions:`.
@@ -1142,19 +1058,6 @@ export async function runAgent(
     ? [createStructuredOutputTool(options.structuredOutput, structuredCapture)]
     : [];
   const structuredToolNames = new Set(structuredTools.map(tool => tool.name));
-  // Re-admitted together at every gate below. Kept as one set so a new injected
-  // tool cannot be added to some of the three gates and forgotten at the rest.
-  //
-  // `disallowed_tools` is applied HERE rather than at the gates, because the two
-  // kinds answer to it differently: a nested delegation tool is an opt-in the
-  // agent's own frontmatter can take back, while StructuredOutput exists only
-  // because this call asked for a schema — removing it would make the request
-  // unsatisfiable by construction rather than merely restricted.
-  const readmitToolNames = new Set([
-    ...[...nestedToolNames].filter(name => !disallowedSet?.has(name)),
-    ...structuredToolNames,
-  ]);
-
   // As in Claude Code, refuse an agent whose `tools:` list resolved to nothing: with
   // no tool it can only narrate calls it cannot make. Extension tools register after
   // spawn (MCP once its servers connect), so they count as possible whenever an
@@ -1174,7 +1077,7 @@ export async function runAgent(
   if (
     (unrecognized.length > 0 || unmatched.length > 0) &&
     toolNames.every((n) => !BUILTIN_TOOL_NAMES.includes(n) || disallowedSet?.has(n)) &&
-    readmitToolNames.size === 0 &&
+    structuredToolNames.size === 0 &&
     !extensionToolsPossible
   ) {
     const reasons = [
@@ -1221,32 +1124,25 @@ export async function runAgent(
   let sessionTools: string[] | undefined;
   let sessionExcludeTools: string[] | undefined;
   if (noExtensions) {
-    // Strict allowlist: built-ins the agent asked for, plus any opt-in nested
-    // tools (whose names would otherwise be dropped as EXCLUDED_TOOL_NAMES).
+    // Strict allowlist: requested built-ins and the structured output tool.
     sessionTools = [
       ...toolNames.filter(
         (t) => !EXCLUDED_TOOL_NAMES.includes(t) && !disallowedSet?.has(t),
       ),
-      ...[...nestedToolNames].filter((t) => !disallowedSet?.has(t)),
-      // Not filtered through `disallowedSet`, unlike the nested tools above:
+      // Not filtered through `disallowedSet`:
       // the caller asked for a schema, and removing the only tool that can
       // satisfy it would make the request unsatisfiable by construction rather
       // than merely restricted.
       ...structuredToolNames,
     ];
   } else {
-    // Deny the orchestration tools EXCEPT the nested ones this agent opted into —
-    // those are injected as customTools and must survive the registry gate.
-    const denyTools = new Set<string>(
-      EXCLUDED_TOOL_NAMES.filter((t) => !nestedToolNames.has(t)),
-    );
+    const denyTools = new Set<string>(EXCLUDED_TOOL_NAMES);
     // Keep only the built-ins the agent asked for — deny the rest.
     for (const name of BUILTIN_TOOL_NAMES) {
       if (!builtinToolNameSet.has(name)) denyTools.add(name);
     }
     if (disallowedSet) {
-      // disallowed_tools wins even over an opt-in nested tool of the same name.
-      // Not over StructuredOutput, though — see the allowlist branch above.
+      // StructuredOutput is required by the caller's schema; see above.
       for (const name of disallowedSet) {
         if (!structuredToolNames.has(name)) denyTools.add(name);
       }
@@ -1257,9 +1153,9 @@ export async function runAgent(
   const configuredSessionDir = resolveConfiguredSessionDir(agentConfig?.sessionDir, effectiveCwd);
   const defaultSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR ?? settingsManager.getSessionDir?.();
   // Frontmatter wins when it says anything; otherwise the project default,
-  // which `rememberAgents` supplies for top-level agents only. Same precedence
+  // which `rememberAgents` supplies. Same precedence
   // as `outputTranscript`.
-  const persistSession = agentConfig?.persistSession ?? (options.nested ? false : rememberAgents);
+  const persistSession = agentConfig?.persistSession ?? rememberAgents;
   const parentSessionFile = ctx.sessionManager?.getSessionFile?.();
   const sessionManager = options.resumeSessionFile
     // Reopening an existing conversation: the file already carries its own
@@ -1297,7 +1193,7 @@ export async function runAgent(
     ...(parentModelRuntime !== undefined && { modelRuntime: parentModelRuntime as never }),
     model,
     tools: sessionTools,
-    customTools: [...nestedTools, ...structuredTools],
+    customTools: structuredTools,
     resourceLoader: loader,
   };
   if (sessionExcludeTools) {
@@ -1347,8 +1243,8 @@ export async function runAgent(
       extNames,
       narrowing,
       mcpToolPatterns: isolated ? undefined : agentConfig?.mcpToolPatterns,
-      readmitToolNames,
-      nestedCallGate,
+      structuredToolNames,
+      toolScopeGate,
     });
   }
 
@@ -1425,7 +1321,7 @@ export async function runAgent(
 export async function resumeAgent(
   session: AgentSession,
   prompt: string,
-  options: Pick<RunOptions, "maxTurns" | "onTurnEnd" | "onToolActivity" | "onAssistantUsage" | "onCompaction" | "signal"> & {
+  options: Pick<RunOptions, "maxTurns" | "onTurnEnd" | "onToolActivity" | "onTextDelta" | "onAssistantUsage" | "onCompaction" | "signal"> & {
     /** The agent's type, for its own `max_turns`. */
     type: SubagentType;
   },

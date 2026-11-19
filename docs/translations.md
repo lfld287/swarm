@@ -1,12 +1,12 @@
 # README translations
 
-For maintainers updating `README.zh-CN.md`, `README.ja.md` or `README.ko.md`. The translations are condensed: they mirror only the intro, Features, Install, Quick Start and the `/agents` command, and link to the English `README.md` for everything else.
+For maintainers updating `README.zh-CN.md`, `README.ja.md` or `README.ko.md`. The translations are condensed: they mirror the header and language navigation, intro, Features, Install, Quick Start, and the concise command and command-line references, and link to the English `README.md` for everything else.
 
 ## When to update
 
-A change to a mirrored section of `README.md` updates all three translations in the same change. Each translation ends with `<!-- source: README.md @ <sha> -->`; `git diff <sha> -- README.md` shows what changed since it was last synced. Bump the sha after syncing.
+A change to a mirrored section of `README.md` updates all three translations in the same change. Each translation ends with `<!-- source: README.md @ <sha> -->`; `git diff <sha> -- README.md` shows what changed since it was last synced. The marker must name a real commit containing the English source that was translated. When syncing against an uncommitted README, keep the last committed source SHA and mark the update as pending in a comment; replace both with the new real source SHA once the English change is committed.
 
-Mirrored sections: the header (tagline, install line), the intro paragraph, `## Features`, `## Install` (with `### Other hosts`), `## Quick Start` (with its two subsections), and the `/agents` row of `## Commands`.
+Mirror the header (tagline, install line and navigation), intro paragraph, `## Features`, `## Install` (including other hosts), `## Quick Start` (define a custom role, spawn it and optionally schedule it), and the `/agents` command row and command-line example in `## Commands`. Leave the detailed menu and other reference sections in English.
 
 Every translation must also keep the pointers to the full English README, so neither a reader nor an agent mistakes the subset for the whole:
 
@@ -21,7 +21,7 @@ The absolute URL is required alongside the relative link, because the relative l
 ## Never translate
 
 - Anything in a code span or code block, including comments inside code blocks.
-- Tool names (`Agent`, `SubagentWorkflow`, `get_subagent_result`, `steer_subagent`), slash commands, menu paths (`/agents → Settings → Widget`), setting keys, frontmatter fields, file paths, CLI flags, event and RPC channel names, keys and keybindings.
+- Tool names (`Agent`, `get_subagent_result`, `steer_subagent`), slash commands, menu paths (`/agents → Settings → Widget`), setting keys, frontmatter fields, file paths, CLI flags, event and RPC channel names, keys and keybindings.
 - Product names: pi, Claude Code, FleetView, npm, DeepSeek Harness, Git.
 - `worktree`: it stays English, written as plain text, in all three languages.
 
@@ -31,12 +31,10 @@ The absolute URL is required alongside the relative link, because the relative l
 |---|---|---|---|
 | sub-agent / subagent | 子代理 | サブエージェント | 서브에이전트 |
 | agent | 代理 | エージェント | 에이전트 |
-| main / parent agent | 主代理 / 父代理 | メイン / 親エージェント | 메인 / 부모 에이전트 |
-| workflow | 工作流 | ワークフロー | 워크플로 |
+| main agent | 主代理 | メインエージェント | 메인 에이전트 |
 | orchestration | 编排 | オーケストレーション | 오케스트레이션 |
-| background / foreground | 后台 / 前台 | バックグラウンド / フォアグラウンド | 백그라운드 / 포그라운드 |
+| background | 后台 | バックグラウンド | 백그라운드 |
 | steer (mid-run) | 引导 | ステアリング (gloss once: 指示を送って軌道修正) | 스티어링 |
-| deterministic | 确定性的 | 決定論的 | 결정론적 |
 | spawn | 启动 | 起動 | 실행 |
 | resume | 恢复 | 再開 | 재개 |
 | session | 会话 | セッション | 세션 |
@@ -53,7 +51,7 @@ The absolute URL is required alongside the relative link, because the relative l
 
 - zh-CN: neutral technical prose, 你 rather than 您, full-width punctuation (，。：；（）), a space between Chinese text and Latin text or code.
 - ja: です/ます form, full-width 、。：（）around Japanese text, a half-width space between Japanese text and Latin text or code.
-- ko: 합니다 form, standard 띄어쓰기, half-width punctuation, particles attached directly to code spans (`Agent` 도구를).
+- ko: 합니다 form, standard 띄어쓰기, half-width punctuation, attach particles to the preceding word.
 
 ## Verifying an update
 

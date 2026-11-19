@@ -9,22 +9,30 @@
  * request. Each run pins `live: false` so the pre-publish smoke's global
  * `PI_E2E_LIVE=1` can't swap a real model in and turn this suite red.
  */
-import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { type Context, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { testAgentFile } from "./helpers/boot-extension.js";
 import {
   agentCall,
   type PrintModeRun,
   routeBySession,
   runPrintMode,
+  settledAgent,
+  toolResultsNamed,
 } from "./helpers/print-mode-runner.js";
 
-/** Text of the parent's Agent tool result — what the orchestrator LLM sees. */
-function agentToolResult(session: AgentSession): string {
-  const msg = [...session.messages].reverse().find(
-    (m) => m.role === "toolResult" && (m as { toolName?: string }).toolName === "Agent",
-  );
-  return ((msg?.content ?? []) as Array<{ text?: string }>).map((b) => b.text ?? "").join("");
+/** Ask the actual result tool only after the matching completion reaches the parent. */
+function readAfterNotification(context: Context) {
+  if (context.messages.some(m => m.role === "toolResult" && m.toolName === "get_subagent_result")) return "Read.";
+  for (const m of context.messages) {
+    if (m.role !== "user") continue;
+    for (const b of m.content) {
+      if (b.type !== "text" || !b.text.includes("<task-notification>")) continue;
+      const id = /<task-id>([^<]+)<\/task-id>/.exec(b.text)?.[1];
+      if (id) return fauxToolCall("get_subagent_result", { agent_id: id });
+    }
+  }
+  return "Waiting for notification.";
 }
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -41,10 +49,11 @@ describe("issue #144 — empty-error final turns must not be 'completed'", () =>
 
   it("a run whose ONLY turn errors with no output is a failure, not an empty success", async () => {
     run = await runPrintMode({
+      agentFiles: { worker: testAgentFile("worker") },
       prompt: "Delegate.",
       respond: routeBySession({
-        parentInitial: agentCall({ run_in_background: false, description: "doomed", prompt: "Do work." }),
-        parentFinal: "parent done",
+        parentInitial: agentCall({ subagent_type: "worker", description: "doomed", prompt: "Do work." }),
+        parentFinal: readAfterNotification,
         // The child's one and only turn: provider error, zero content.
         subagent: () => fauxAssistantMessage([], { stopReason: "error", errorMessage: FATAL }),
       }),
@@ -53,17 +62,19 @@ describe("issue #144 — empty-error final turns must not be 'completed'", () =>
 
     // DESIRED: the orchestrator sees a failure naming the provider error —
     // not a clean success reading "No output.".
-    const toolResult = agentToolResult(run.parentSession);
+    expect(settledAgent(run)).toMatchObject({ status: "error", error: FATAL });
+    const [toolResult] = toolResultsNamed(run.parentSession, "get_subagent_result");
     expect(toolResult).toContain(FATAL);
     expect(toolResult).not.toContain("No output.");
   });
 
   it("an earlier turn's text must not mask a failed final turn as a fresh success", async () => {
     run = await runPrintMode({
+      agentFiles: { worker: testAgentFile("worker") },
       prompt: "Delegate.",
       respond: routeBySession({
-        parentInitial: agentCall({ run_in_background: false, description: "masked", prompt: "Do work." }),
-        parentFinal: "parent done",
+        parentInitial: agentCall({ subagent_type: "worker", description: "masked", prompt: "Do work." }),
+        parentFinal: readAfterNotification,
         subagent: (ctx) => {
           const hasToolResult = ctx.messages.some((m) => m.role === "toolResult");
           // Turn 1: real text + a tool call. Turn 2 (after the tool result):
@@ -82,7 +93,8 @@ describe("issue #144 — empty-error final turns must not be 'completed'", () =>
     // The orchestrator sees the failure (not the earlier text as a clean
     // answer), AND the partial output is salvaged, clearly labeled as
     // pre-failure so it can't be mistaken for the final answer.
-    const toolResult = agentToolResult(run.parentSession);
+    expect(settledAgent(run)).toMatchObject({ status: "error", error: FATAL });
+    const [toolResult] = toolResultsNamed(run.parentSession, "get_subagent_result");
     expect(toolResult).toContain(FATAL);
     expect(toolResult).toContain("Partial output before the failure:");
     expect(toolResult).toContain("EARLIER-PARTIAL-TEXT");
@@ -92,16 +104,18 @@ describe("issue #144 — empty-error final turns must not be 'completed'", () =>
 
   it("a pure empty-error run shows no 'partial output' section", async () => {
     run = await runPrintMode({
+      agentFiles: { worker: testAgentFile("worker") },
       prompt: "Delegate.",
       respond: routeBySession({
-        parentInitial: agentCall({ run_in_background: false, description: "empty", prompt: "Do work." }),
-        parentFinal: "parent done",
+        parentInitial: agentCall({ subagent_type: "worker", description: "empty", prompt: "Do work." }),
+        parentFinal: readAfterNotification,
         subagent: () => fauxAssistantMessage([], { stopReason: "error", errorMessage: FATAL }),
       }),
       live: false,
     });
 
-    const toolResult = agentToolResult(run.parentSession);
+    expect(settledAgent(run)).toMatchObject({ status: "error", error: FATAL });
+    const [toolResult] = toolResultsNamed(run.parentSession, "get_subagent_result");
     expect(toolResult).toContain(FATAL);
     expect(toolResult).not.toContain("Partial output before the failure:");
   });

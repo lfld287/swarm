@@ -77,7 +77,7 @@ export function mentionRoster(
 ): MentionTarget[] {
   const live = (r: AgentRecord) => r.status === "running" || r.status === "queued";
   const records = manager.listAgents()
-    .filter(r => r.handle !== undefined && r.parentAgentId === undefined)
+    .filter(r => r.handle !== undefined)
     .sort((a, b) => (Number(live(b)) - Number(live(a))) || (a.startedAt - b.startedAt));
 
   const taken = new Set<string>();

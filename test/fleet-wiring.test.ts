@@ -13,6 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTestAgent } from "./helpers/boot-extension.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -89,6 +90,7 @@ describe("FleetView wiring (real extension lifecycle)", () => {
     // async join → completion routes straight to sendIndividualNudge (no batch
     // debounce), so fleet.onAgentFinished fires synchronously on the result.
     writeFileSync(join(tmpDir, ".pi", "subagents.json"), JSON.stringify({ schedulingEnabled: false, defaultJoinMode: "async" }));
+    writeTestAgent(tmpDir, "worker");
     process.chdir(tmpDir);
   });
 
@@ -127,7 +129,7 @@ describe("FleetView wiring (real extension lifecycle)", () => {
 
     const spawn = await tools.get("Agent").execute(
       "tc",
-      { prompt: "go", description: "live one", subagent_type: "general-purpose", run_in_background: true },
+      { prompt: "go", description: "live one", subagent_type: "worker" },
       undefined,
       undefined,
       ctxWith(uiCtx()),

@@ -7,8 +7,8 @@
 
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { renderAgentName } from "../agent-color.js";
-import { type AgentManager, isTopLevelAgent } from "../agent-manager.js";
-import { getConfig } from "../agent-types.js";
+import type { AgentManager } from "../agent-manager.js";
+import { getAgentConfig } from "../agent-types.js";
 import type { AgentInvocation, SubagentType, WidgetMode } from "../types.js";
 import { getLifetimeCost, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../usage.js";
 
@@ -60,35 +60,6 @@ export interface AgentActivity {
   turnCount: number;
   /** Effective max turns for this agent (undefined = unlimited). */
   maxTurns?: number;
-}
-
-/** Metadata attached to Agent tool results for custom rendering. */
-export interface AgentDetails {
-  displayName: string;
-  description: string;
-  subagentType: string;
-  toolUses: number;
-  tokens: string;
-  durationMs: number;
-  status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error" | "background";
-  /** Human-readable description of what the agent is currently doing. */
-  activity?: string;
-  /** Current spinner frame index (for animated running indicator). */
-  spinnerFrame?: number;
-  /** Show the ctrl+b hint on this running foreground call's row — one row per batch. */
-  backgroundHint?: boolean;
-  /** Short label for the model the run used, e.g. "haiku 4.5". */
-  modelName?: string;
-  /** Notable config tags (e.g. ["thinking: high", "isolated"]). */
-  tags?: string[];
-  /** Current turn count. */
-  turnCount?: number;
-  /** Effective max turns (undefined = unlimited). */
-  maxTurns?: number;
-  /** Estimated cost in USD; 0 when the model has no pricing data. */
-  cost?: number;
-  agentId?: string;
-  error?: string;
 }
 
 // ---- Formatting helpers ----
@@ -186,15 +157,14 @@ export function formatDuration(startedAt: number, completedAt?: number): string 
   return `${formatMs(Date.now() - startedAt)} (running)`;
 }
 
-/** Get display name for any agent type (built-in or custom). */
+/** Get display name for any agent type, including one no longer defined. */
 export function getDisplayName(type: SubagentType): string {
-  return getConfig(type).displayName;
+  return getAgentConfig(type)?.displayName ?? type;
 }
 
 /** Short label for prompt mode: "twin" for append, nothing for replace (the default). */
 export function getPromptModeLabel(type: SubagentType): string | undefined {
-  const config = getConfig(type);
-  return config.promptMode === "append" ? "twin" : undefined;
+  return getAgentConfig(type)?.promptMode === "append" ? "twin" : undefined;
 }
 
 /**
@@ -216,7 +186,6 @@ export function buildInvocationTags(
   if (invocation.isolated) tags.push("isolated");
   if (invocation.isolation === "worktree") tags.push("worktree");
   if (invocation.inheritContext) tags.push("inherit context");
-  if (invocation.runInBackground) tags.push("background");
   if (invocation.maxTurns != null) tags.push(`max turns: ${invocation.maxTurns}`);
   return {
     modelName: asked(invocation.modelName, invocation.requestedModel),
@@ -285,7 +254,7 @@ export class AgentWidget {
     /**
      * Read live at render time. Selects which agents the widget shows — see
      * `WidgetMode`. Defaults to `"all"` when a caller supplies no policy; the
-     * extension supplies one defaulting to `"background"`.
+     * extension supplies one that reads the current setting.
      */
     private mode: () => WidgetMode = () => "all",
     /**
@@ -304,24 +273,8 @@ export class AgentWidget {
     private showModel: () => boolean = () => false,
   ) {}
 
-  /**
-   * Agents eligible for the widget, per the current `WidgetMode`:
-   *   - `off`: none (the widget's existing empty-state path hides it entirely).
-   *   - `background`: drop only agents *known* to be foreground
-   *     (`isBackground === false`); keep everything else — background, queued,
-   *     scheduled, or RPC-spawned (`undefined`). Keying off the `isBackground`
-   *     record flag rather than the UI-only `invocation` snapshot (which only the
-   *     Agent-tool path sets), and excluding rather than allow-listing, means
-   *     only proven-foreground runs drop out — nothing else silently vanishes.
-   *   - `all`: every agent.
-   */
   private widgetAgents() {
-    const all = this.manager.listAgents().filter(isTopLevelAgent);
-    switch (this.mode()) {
-      case "off": return [];
-      case "background": return all.filter(a => a.isBackground !== false);
-      default: return all;
-    }
+    return this.mode() === "off" ? [] : this.manager.listAgents();
   }
 
   /** Set the UI context (grabbed from first tool execution). */
@@ -464,9 +417,7 @@ export class AgentWidget {
       const bg = this.agentActivity.get(a.id);
       const toolUses = bg?.toolUses ?? a.toolUses;
       // Spend comes from the record, never from the activity tracker: the record
-      // is the one that survives the agent finishing, and the one nested-tools
-      // folds a hidden child's spend into. Reading the tracker while an agent
-      // runs and the record once it stops made the figure jump at completion.
+      // survives the agent finishing, so the figure stays consistent.
       const tokens = getLifetimeTotal(a.lifetimeUsage);
       const contextPercent = getSessionContextPercent(bg?.session);
       const tokenText = tokens > 0 ? formatSessionTokens(tokens, contextPercent, theme, a.compactionCount) : "";

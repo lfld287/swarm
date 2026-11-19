@@ -11,12 +11,14 @@
  * Uses very short timings (100–300ms) so the test stays fast.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { registerAgents } from "../src/agent-types.js";
+import { loadCustomAgents } from "../src/custom-agents.js";
 import { SubagentScheduler } from "../src/schedule.js";
 import { ScheduleStore } from "../src/schedule-store.js";
+import { type Hermetic, hermeticDir, testAgentFile } from "./helpers/boot-extension.js";
 
 type FakeRecord = { status: string; promise: Promise<string>; resolve: () => void };
 
@@ -39,7 +41,6 @@ function makeFaithfulManager(initialStatus = "completed") {
       queueMicrotask(() => records.get(id)?.resolve());
       return id;
     }),
-    awaitStartup: vi.fn(async () => {}),
     getRecord: vi.fn(function (this: any, id: string) {
       return records.get(id);
     }),
@@ -74,15 +75,20 @@ describe("SubagentScheduler — end-to-end with real timers", () => {
   let store: ScheduleStore;
   let scheduler: SubagentScheduler;
 
+  let project: Hermetic;
+
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "schedule-e2e-"));
+    project = hermeticDir({ agentFiles: { worker: testAgentFile("worker") } });
+    tmp = project.dir;
+    registerAgents(loadCustomAgents(tmp));
     store = new ScheduleStore(join(tmp, "schedules.json"));
     scheduler = new SubagentScheduler();
   });
 
   afterEach(() => {
     scheduler.stop();
-    rmSync(tmp, { recursive: true, force: true });
+    registerAgents(new Map());
+    project.restore();
   });
 
   it("one-shot job: real setTimeout fires, agent runs, store reflects success", async () => {
@@ -97,7 +103,7 @@ describe("SubagentScheduler — end-to-end with real timers", () => {
       name: "e2e-once",
       description: "test",
       schedule: future,
-      subagent_type: "general-purpose",
+      subagent_type: "worker",
       prompt: "hello",
     });
     expect(job.scheduleType).toBe("once");
@@ -124,7 +130,7 @@ describe("SubagentScheduler — end-to-end with real timers", () => {
       name: "e2e-fail",
       description: "test",
       schedule: future,
-      subagent_type: "general-purpose",
+      subagent_type: "worker",
       prompt: "fail",
     });
 
@@ -145,7 +151,7 @@ describe("SubagentScheduler — end-to-end with real timers", () => {
       name: "e2e-interval",
       description: "test",
       schedule: "100s",  // Will be too long; override below.
-      subagent_type: "general-purpose",
+      subagent_type: "worker",
       prompt: "tick",
     });
     // Replace with a literal 100ms interval — easier than crafting a parseable shorthand for ms.
@@ -172,7 +178,7 @@ describe("SubagentScheduler — end-to-end with real timers", () => {
       name: "persistent",
       description: "x",
       schedule: future,
-      subagent_type: "general-purpose",
+      subagent_type: "worker",
       prompt: "x",
     });
 
@@ -193,7 +199,7 @@ describe("SubagentScheduler — end-to-end with real timers", () => {
       name: "shape-test",
       description: "x",
       schedule: "1h",
-      subagent_type: "general-purpose",
+      subagent_type: "worker",
       prompt: "x",
     });
 
@@ -217,7 +223,7 @@ describe("SubagentScheduler — end-to-end with real timers", () => {
     const future = new Date(Date.now() + 100).toISOString();
     const job = scheduler.addJob({
       name: "events", description: "x", schedule: future,
-      subagent_type: "general-purpose", prompt: "x",
+      subagent_type: "worker", prompt: "x",
     });
 
     await waitFor(() => manager.spawn.mock.calls.length === 1);

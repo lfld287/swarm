@@ -20,12 +20,6 @@ export interface SubagentInfo {
   type: string;
   description: string;
   status: AgentRecord["status"];
-  /** Nesting depth: a top-level agent is 1. */
-  depth: number;
-  /** The agent that spawned this one through its scoped `Agent` tool. */
-  parentAgentId?: string;
-  /** The workflow run that spawned this one. */
-  workflowId?: string;
   startedAt: number;
   completedAt?: number;
   /** Until `completedAt`, the time elapsed so far. */
@@ -45,15 +39,9 @@ export interface SubagentInfo {
    * produced.
    */
   tokens?: { input: number; output: number; total: number };
-  /**
-   * The run's spend as a pi `Usage`, its descendants' spend included, so
-   * summing it across a tree double-counts. Omitted when nothing was spent.
-   */
+  /** The agent's lifetime spend as a pi `Usage`. Omitted when nothing was spent. */
   usage?: ReportedUsage;
-  /**
-   * This agent's own spend, descendants excluded: the figure to sum across a
-   * tree. Omitted when the agent itself spent nothing.
-   */
+  /** This agent's own spend. Omitted when the agent itself spent nothing. */
   ownUsage?: ReportedUsage;
 }
 
@@ -78,9 +66,6 @@ export function toSubagentInfo(record: AgentRecord, now = Date.now()): SubagentI
     type: record.type,
     description: record.description,
     status: record.status,
-    depth: record.depth ?? 1,
-    ...(record.parentAgentId !== undefined ? { parentAgentId: record.parentAgentId } : {}),
-    ...(record.workflowId !== undefined ? { workflowId: record.workflowId } : {}),
     startedAt: record.startedAt,
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     durationMs: (record.completedAt ?? now) - record.startedAt,

@@ -19,10 +19,6 @@ import type { AgentConfig } from "./types.js";
 /**
  * The badge column: a two-cell glyph plus a space, so every label starts at the
  * same offset whether or not the agent is badged.
- *
- * Built-in defaults are unmarked. They are the majority of the list, and a
- * badge on them would make the three that matter — the agents the user or a
- * package put there — harder to pick out, not easier.
  */
 export function sourceIndicator(cfg: AgentConfig | undefined): string {
   const disabled = cfg?.enabled === false;
@@ -38,11 +34,7 @@ export function sourceIndicator(cfg: AgentConfig | undefined): string {
  *
  * Keyed on what `sourceIndicator` would emit, so the two cannot drift into a
  * glyph with no key (which is what `▪` was) or a key for a glyph that is not on
- * screen. A defaults-only roster returns "", and the caller omits the line.
- *
- * `source` is undefined for built-in defaults — the `"default"` member of the
- * union is declared but never assigned, since default-agents.ts sets only
- * `isDefault` — so they contribute no key, matching their blank badge.
+ * screen. Unknown roles have no source badge.
  */
 export function sourceLegend(cfgs: readonly (AgentConfig | undefined)[]): string {
   const parts: string[] = [];

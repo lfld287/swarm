@@ -161,10 +161,12 @@ describe("settings persistence", () => {
   it("round-trips widgetMode; keeps valid values, drops invalid", () => {
     saveSettings({ widgetMode: "off" }, projectDir);
     expect(loadSettings(projectDir)).toEqual({ widgetMode: "off" });
-    saveSettings({ widgetMode: "background" }, projectDir);
-    expect(loadSettings(projectDir)).toEqual({ widgetMode: "background" });
-    writeGlobal({ widgetMode: "sideways" } as any);
-    expect(loadSettings(projectDir)).toEqual({}); // invalid value dropped
+    writeProject({ widgetMode: "background" });
+    expect(loadSettings(projectDir)).toEqual({ widgetMode: "all" });
+    writeProject({ widgetMode: "sideways" });
+    expect(loadSettings(projectDir)).toEqual({ widgetMode: "off" }); // invalid project override dropped
+    writeGlobal({ widgetMode: "sideways" });
+    expect(loadSettings(projectDir)).toEqual({});
   });
 
   it("round-trips viewerMarkdown; keeps valid values, drops invalid", () => {
@@ -185,36 +187,20 @@ describe("settings persistence", () => {
     expect(loadSettings(projectDir)).toEqual({}); // non-boolean dropped
   });
 
-  it("round-trips backgroundByDefault (true and false), and absence stays absent", () => {
-    // `false` is the load-bearing case: it's how a user restores the previous
-    // foreground default, so it must survive a save/load rather than being
-    // read back as absent and re-defaulting to background.
-    saveSettings({ backgroundByDefault: false }, projectDir);
-    expect(loadSettings(projectDir)).toEqual({ backgroundByDefault: false });
-
-    saveSettings({ backgroundByDefault: true }, projectDir);
-    expect(loadSettings(projectDir)).toEqual({ backgroundByDefault: true });
-
-    saveSettings({ backgroundByDefault: undefined }, projectDir);
-    expect(loadSettings(projectDir)).toEqual({});
+  it("ignores former concurrency and mode settings without discarding current settings", () => {
+    writeProject({ maxConcurrentForeground: 2, backgroundByDefault: false, maxConcurrent: 3 });
+    expect(loadSettings(projectDir)).toEqual({ maxConcurrent: 3 });
   });
 
-  it("sanitize drops non-boolean backgroundByDefault silently", () => {
-    writeProject({ backgroundByDefault: "yes" } as any);
-    expect(loadSettings(projectDir)).toEqual({});
-    writeProject({ backgroundByDefault: 0 } as any);
-    expect(loadSettings(projectDir)).toEqual({});
-  });
+  it("round-trips packageAgents in all three forms", () => {
+    saveSettings({ packageAgents: false }, projectDir);
+    expect(loadSettings(projectDir)).toEqual({ packageAgents: false });
 
-  it("round-trips packageAgents and packageWorkflows in all three forms", () => {
-    saveSettings({ packageAgents: false, packageWorkflows: false }, projectDir);
-    expect(loadSettings(projectDir)).toEqual({ packageAgents: false, packageWorkflows: false });
-
-    saveSettings({ packageAgents: true, packageWorkflows: true }, projectDir);
-    expect(loadSettings(projectDir)).toEqual({ packageAgents: true, packageWorkflows: true });
+    saveSettings({ packageAgents: true }, projectDir);
+    expect(loadSettings(projectDir)).toEqual({ packageAgents: true });
 
     saveSettings({ packageAgents: ["my-subagents", "@acme/tools"] }, projectDir);
-    expect(loadSettings(projectDir)).toEqual({ packageAgents: ["my-subagents", "@acme/tools"], packageWorkflows: true });
+    expect(loadSettings(projectDir)).toEqual({ packageAgents: ["my-subagents", "@acme/tools"] });
   });
 
   it("trims allowlist entries and drops the ones that are not strings", () => {
@@ -241,8 +227,6 @@ describe("settings persistence", () => {
   });
 
   it("drops a packageAgents value that is neither a boolean, a string, nor an array", () => {
-    writeProject({ packageWorkflows: { allow: [] } } as any);
-    expect(loadSettings(projectDir)).toEqual({});
     writeProject({ packageAgents: 7 } as any);
     expect(loadSettings(projectDir)).toEqual({});
   });
@@ -279,16 +263,6 @@ describe("settings persistence", () => {
     saveSettings({ showModel: false }, projectDir);
     expect(loadSettings(projectDir)).toEqual({ showModel: false });
     writeGlobal({ showModel: "on" } as any);
-    expect(loadSettings(projectDir)).toEqual({});
-  });
-
-  it("round-trips workflowsEnabled; drops non-boolean", () => {
-    saveSettings({ workflowsEnabled: true }, projectDir);
-    expect(loadSettings(projectDir)).toEqual({ workflowsEnabled: true });
-    saveSettings({ workflowsEnabled: false }, projectDir);
-    expect(loadSettings(projectDir)).toEqual({ workflowsEnabled: false });
-    writeGlobal({ workflowsEnabled: "on" } as any);
-    // Dropped, not coerced — a truthy string must not switch the feature on.
     expect(loadSettings(projectDir)).toEqual({});
   });
 
@@ -444,34 +418,6 @@ describe("settings persistence", () => {
       expect(loadSettings(projectDir).maxConcurrent).toBeUndefined();
     });
 
-    // Unlike maxConcurrent above, 0 is the DEFAULT here and means unlimited —
-    // dropping it would make the default unrepresentable in the file.
-    it("keeps maxConcurrentForeground: 0 (explicit unlimited)", () => {
-      writeProject({ maxConcurrentForeground: 0 });
-      expect(loadSettings(projectDir)).toEqual({ maxConcurrentForeground: 0 });
-    });
-
-    it("drops out-of-range or non-integer maxConcurrentForeground", () => {
-      for (const bad of [-1, 1025, 1.5, "four", null]) {
-        writeProject({ maxConcurrentForeground: bad });
-        expect(loadSettings(projectDir).maxConcurrentForeground).toBeUndefined();
-      }
-    });
-
-    it("keeps maxConcurrentNested, including 0 (explicit unlimited)", () => {
-      writeProject({ maxConcurrentNested: 0 });
-      expect(loadSettings(projectDir)).toEqual({ maxConcurrentNested: 0 });
-      writeProject({ maxConcurrentNested: 5 });
-      expect(loadSettings(projectDir)).toEqual({ maxConcurrentNested: 5 });
-    });
-
-    it("drops out-of-range or non-integer maxConcurrentNested", () => {
-      for (const bad of [-1, 1025, 1.5, "four", null]) {
-        writeProject({ maxConcurrentNested: bad });
-        expect(loadSettings(projectDir).maxConcurrentNested).toBeUndefined();
-      }
-    });
-
     it("accepts defaultMaxTurns: 0 (explicit unlimited)", () => {
       writeProject({ defaultMaxTurns: 0 });
       expect(loadSettings(projectDir)).toEqual({ defaultMaxTurns: 0 });
@@ -484,17 +430,6 @@ describe("settings persistence", () => {
 
     it("drops graceTurns < 1", () => {
       writeProject({ graceTurns: 0 });
-      expect(loadSettings(projectDir)).toEqual({});
-    });
-
-    it("keeps maxSubagentDepth 0 (nesting off) but drops negative, fractional, and over-ceiling values", () => {
-      writeProject({ maxSubagentDepth: 0 });
-      expect(loadSettings(projectDir)).toEqual({ maxSubagentDepth: 0 });
-      writeProject({ maxSubagentDepth: -1 });
-      expect(loadSettings(projectDir)).toEqual({});
-      writeProject({ maxSubagentDepth: 1.5 });
-      expect(loadSettings(projectDir)).toEqual({});
-      writeProject({ maxSubagentDepth: 17 });
       expect(loadSettings(projectDir)).toEqual({});
     });
 
@@ -524,8 +459,12 @@ describe("settings persistence", () => {
       expect(loadSettings(projectDir)).toEqual({ fallbackSubagent: "my-router" });
       writeProject({ fallbackSubagent: 42 });
       expect(loadSettings(projectDir)).toEqual({});
+    });
+
+    it("treats a blank project fallback as none, overriding a named global fallback", () => {
+      writeGlobal({ fallbackSubagent: "my-router" });
       writeProject({ fallbackSubagent: "   " });
-      expect(loadSettings(projectDir)).toEqual({});
+      expect(loadSettings(projectDir)).toEqual({ fallbackSubagent: "none" });
     });
 
     it("drops invalid defaultJoinMode values", () => {
@@ -574,37 +513,10 @@ describe("settings persistence", () => {
       expect(loadSettings(projectDir).scopeModels).toBeUndefined();
     });
 
-    it("accepts disableDefaultAgents boolean (true and false)", () => {
-      writeProject({ disableDefaultAgents: true });
-      expect(loadSettings(projectDir)).toEqual({ disableDefaultAgents: true });
-      writeProject({ disableDefaultAgents: false });
-      expect(loadSettings(projectDir)).toEqual({ disableDefaultAgents: false });
-    });
-
-    it("drops non-boolean disableDefaultAgents", () => {
-      writeProject({ disableDefaultAgents: "yes" });
-      expect(loadSettings(projectDir).disableDefaultAgents).toBeUndefined();
-      writeProject({ disableDefaultAgents: 1 });
-      expect(loadSettings(projectDir).disableDefaultAgents).toBeUndefined();
-      writeProject({ disableDefaultAgents: null });
-      expect(loadSettings(projectDir).disableDefaultAgents).toBeUndefined();
-    });
-
     it("accepts all valid toolDescriptionMode values", () => {
       for (const mode of ["full", "compact", "custom"] as const) {
         writeProject({ toolDescriptionMode: mode });
         expect(loadSettings(projectDir)).toEqual({ toolDescriptionMode: mode });
-      }
-    });
-
-    it("accepts every workflowToolExposure value, and drops anything else", () => {
-      for (const mode of ["skill", "inline", "deferred"] as const) {
-        writeProject({ workflowToolExposure: mode });
-        expect(loadSettings(projectDir)).toEqual({ workflowToolExposure: mode });
-      }
-      for (const bad of ["full", true, null]) {
-        writeProject({ workflowToolExposure: bad });
-        expect(loadSettings(projectDir).workflowToolExposure).toBeUndefined();
       }
     });
 
@@ -712,16 +624,12 @@ describe("settings persistence", () => {
     beforeEach(() => {
       appliers = {
         setMaxConcurrent: vi.fn(),
-        setMaxConcurrentForeground: vi.fn(),
-        setMaxConcurrentNested: vi.fn(),
         setDefaultMaxTurns: vi.fn(),
         setGraceTurns: vi.fn(),
         setDefaultJoinMode: vi.fn(),
-        setBackgroundByDefault: vi.fn(),
         setSchedulingEnabled: vi.fn(),
         setScopeModels: vi.fn(),
         setStrictAgentFiles: vi.fn(),
-        setDisableDefaultAgents: vi.fn(),
         setToolDescriptionMode: vi.fn(),
         setFleetView: vi.fn(),
         setAgentMentions: vi.fn(),
@@ -731,45 +639,18 @@ describe("settings persistence", () => {
         setViewerMarkdown: vi.fn(),
         setOutputTranscript: vi.fn(),
         setWorktreeIsolation: vi.fn(),
-        setMaxSubagentDepth: vi.fn(),
         setFallbackSubagent: vi.fn(),
         setReportUsage: vi.fn(),
         setShowCost: vi.fn(),
         setShowModel: vi.fn(),
         setPackageAgents: vi.fn(),
-        setPackageWorkflows: vi.fn(),
       };
     });
 
     // 0 is a real value here, so `if (s.x)` truthiness would silently skip it.
-    it("applies maxConcurrentForeground, including an explicit 0", () => {
-      applySettings({ maxConcurrentForeground: 3 }, appliers);
-      expect(appliers.setMaxConcurrentForeground).toHaveBeenCalledWith(3);
-
-      applySettings({ maxConcurrentForeground: 0 }, appliers);
-      expect(appliers.setMaxConcurrentForeground).toHaveBeenCalledWith(0);
-
-      vi.mocked(appliers.setMaxConcurrentForeground).mockClear();
-      applySettings({}, appliers);
-      expect(appliers.setMaxConcurrentForeground).not.toHaveBeenCalled();
-    });
-
-    it("applies maxConcurrentNested, including an explicit 0", () => {
-      applySettings({ maxConcurrentNested: 5 }, appliers);
-      expect(appliers.setMaxConcurrentNested).toHaveBeenCalledWith(5);
-
-      applySettings({ maxConcurrentNested: 0 }, appliers);
-      expect(appliers.setMaxConcurrentNested).toHaveBeenCalledWith(0);
-
-      vi.mocked(appliers.setMaxConcurrentNested).mockClear();
-      applySettings({}, appliers);
-      expect(appliers.setMaxConcurrentNested).not.toHaveBeenCalled();
-    });
-
-    it("applies packageAgents and packageWorkflows, including false and an empty list", () => {
-      applySettings({ packageAgents: ["a"], packageWorkflows: false }, appliers);
+    it("applies packageAgents, including false and an empty list", () => {
+      applySettings({ packageAgents: ["a"] }, appliers);
       expect(appliers.setPackageAgents).toHaveBeenCalledWith(["a"]);
-      expect(appliers.setPackageWorkflows).toHaveBeenCalledWith(false);
 
       // `false` and `[]` are real values, so a truthiness check would skip them.
       applySettings({ packageAgents: false }, appliers);
@@ -810,7 +691,6 @@ describe("settings persistence", () => {
       expect(appliers.setDefaultJoinMode).not.toHaveBeenCalled();
       expect(appliers.setSchedulingEnabled).not.toHaveBeenCalled();
       expect(appliers.setScopeModels).not.toHaveBeenCalled();
-      expect(appliers.setDisableDefaultAgents).not.toHaveBeenCalled();
       expect(appliers.setToolDescriptionMode).not.toHaveBeenCalled();
     });
 
@@ -822,10 +702,9 @@ describe("settings persistence", () => {
     });
 
     it("applies only the fields that are present", () => {
-      applySettings({ maxConcurrent: 4, graceTurns: 3, maxSubagentDepth: 1 }, appliers);
+      applySettings({ maxConcurrent: 4, graceTurns: 3 }, appliers);
       expect(appliers.setMaxConcurrent).toHaveBeenCalledWith(4);
       expect(appliers.setGraceTurns).toHaveBeenCalledWith(3);
-      expect(appliers.setMaxSubagentDepth).toHaveBeenCalledWith(1);
       expect(appliers.setDefaultMaxTurns).not.toHaveBeenCalled();
       expect(appliers.setDefaultJoinMode).not.toHaveBeenCalled();
       expect(appliers.setSchedulingEnabled).not.toHaveBeenCalled();
@@ -841,7 +720,6 @@ describe("settings persistence", () => {
           defaultJoinMode: "group",
           schedulingEnabled: false,
           scopeModels: true,
-          disableDefaultAgents: true,
           toolDescriptionMode: "compact",
           fleetView: false,
           widgetMode: "off",
@@ -855,7 +733,6 @@ describe("settings persistence", () => {
       expect(appliers.setSchedulingEnabled).toHaveBeenCalledWith(false);
       expect(appliers.setScopeModels).toHaveBeenCalledWith(true);
       expect(appliers.setStrictAgentFiles).not.toHaveBeenCalled();  // absent from this snapshot
-      expect(appliers.setDisableDefaultAgents).toHaveBeenCalledWith(true);
       expect(appliers.setToolDescriptionMode).toHaveBeenCalledWith("compact");
       expect(appliers.setFleetView).toHaveBeenCalledWith(false);
       expect(appliers.setWidgetMode).toHaveBeenCalledWith("off");
@@ -915,11 +792,6 @@ describe("settings persistence", () => {
       expect(appliers.setScopeModels).toHaveBeenCalledWith(false);
     });
 
-    it("applies disableDefaultAgents: false", () => {
-      applySettings({ disableDefaultAgents: false }, appliers);
-      expect(appliers.setDisableDefaultAgents).toHaveBeenCalledWith(false);
-    });
-
     it("applies toolDescriptionMode", () => {
       applySettings({ toolDescriptionMode: "full" }, appliers);
       expect(appliers.setToolDescriptionMode).toHaveBeenCalledWith("full");
@@ -942,20 +814,6 @@ describe("settings persistence", () => {
     it("applies defaultMaxTurns: 0 as the explicit unlimited marker", () => {
       applySettings({ defaultMaxTurns: 0 }, appliers);
       expect(appliers.setDefaultMaxTurns).toHaveBeenCalledWith(0);
-    });
-
-    it("calls setBackgroundByDefault with either boolean", () => {
-      applySettings({ backgroundByDefault: false }, appliers);
-      expect(appliers.setBackgroundByDefault).toHaveBeenCalledWith(false);
-      applySettings({ backgroundByDefault: true }, appliers);
-      expect(appliers.setBackgroundByDefault).toHaveBeenCalledWith(true);
-    });
-
-    // Absence must leave the in-memory default (background) alone — calling
-    // the applier with `undefined` would read as foreground at the spawn site.
-    it("does not call setBackgroundByDefault when the field is absent", () => {
-      applySettings({ maxConcurrent: 4 }, appliers);
-      expect(appliers.setBackgroundByDefault).not.toHaveBeenCalled();
     });
 
     // Wiring tests for the master switch — ensures the schedulingEnabled
@@ -1006,16 +864,12 @@ describe("settings persistence", () => {
     beforeEach(() => {
       appliers = {
         setMaxConcurrent: vi.fn(),
-        setMaxConcurrentForeground: vi.fn(),
-        setMaxConcurrentNested: vi.fn(),
         setDefaultMaxTurns: vi.fn(),
         setGraceTurns: vi.fn(),
         setDefaultJoinMode: vi.fn(),
-        setBackgroundByDefault: vi.fn(),
         setSchedulingEnabled: vi.fn(),
         setScopeModels: vi.fn(),
         setStrictAgentFiles: vi.fn(),
-        setDisableDefaultAgents: vi.fn(),
         setToolDescriptionMode: vi.fn(),
         setFleetView: vi.fn(),
         setAgentMentions: vi.fn(),
@@ -1025,13 +879,11 @@ describe("settings persistence", () => {
         setViewerMarkdown: vi.fn(),
         setOutputTranscript: vi.fn(),
         setWorktreeIsolation: vi.fn(),
-        setMaxSubagentDepth: vi.fn(),
         setFallbackSubagent: vi.fn(),
         setReportUsage: vi.fn(),
         setShowCost: vi.fn(),
         setShowModel: vi.fn(),
         setPackageAgents: vi.fn(),
-        setPackageWorkflows: vi.fn(),
       };
     });
 
@@ -1061,7 +913,8 @@ describe("settings persistence", () => {
 
       expect(emit).toHaveBeenCalledWith("subagents:settings_loaded", { settings: {} });
       expect(result).toEqual({});
-      // No setters fired — defaults preserved
+      expect(appliers.setFallbackSubagent).toHaveBeenCalledWith(undefined);
+      // Other defaults preserved
       expect(appliers.setMaxConcurrent).not.toHaveBeenCalled();
       expect(appliers.setDefaultMaxTurns).not.toHaveBeenCalled();
       expect(appliers.setGraceTurns).not.toHaveBeenCalled();

@@ -15,7 +15,7 @@
 
 import { existsSync } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveSpawnType } from "./agent-types.js";
+import { resolveEnabledType, unavailableAgentTypeMessage } from "./agent-types.js";
 import type { AgentRecord, SubagentType } from "./types.js";
 
 /** `customType` of the session entry a finished top-level agent appends. */
@@ -113,8 +113,7 @@ export function findAgentRecordEntry(ctx: ExtensionContext, id: string, matchHan
 
 /**
  * Whether an evicted agent's saved conversation can be reopened, and the
- * agent type to reopen it under. Shared by `@handle`, `Agent({ resume })` and
- * a workflow's `resume`, so all three refuse the same cases in the same words;
+ * agent type to reopen it under. Shared by `@handle` and `Agent({ resume })`;
  * `reason` completes "Could not resume X —" and "cannot be resumed —".
  *
  * The file is checked here rather than left to SessionManager.open: that runs
@@ -123,12 +122,9 @@ export function findAgentRecordEntry(ctx: ExtensionContext, id: string, matchHan
  * conversation unrecoverable (Claude Code's `not_reachable`); `gone` marks
  * that, and the no-file case, as refusals that can never clear.
  *
- * The Agent tool deliberately falls back to general-purpose for a type it
- * cannot resolve (#183), which covers a deleted file AND a merely disabled
- * one. A resume must not inherit that: reopening this conversation under a
- * different agent's prompt and tools is not continuing it, and the new record
- * would re-tombstone under the substitute, so the handle would never find its
- * way back. `@handle` and the Agent tool reload the agent files first.
+ * The Agent tool can use an explicitly configured fallback for a new run.
+ * A resume must not: reopening a conversation under a different role's prompt
+ * and tools is not continuing it. Both callers reload agent files first.
  *
  * `worktreeLost` refuses for good, as Claude Code does ("its worktree no
  * longer exists"): the conversation's edits were made in a directory that is
@@ -145,9 +141,13 @@ export function reopenTarget(
   }
   if (!existsSync(sessionFile)) return { ok: false, reason: "its session is gone", gone: true };
   if (worktreeLost) return { ok: false, reason: "its worktree no longer exists", gone: true };
-  const dispatch = resolveSpawnType(type);
-  if (!dispatch.ok || dispatch.fellBackFrom !== undefined) {
-    return { ok: false, reason: `the ${type} agent is no longer available`, gone: false };
+  const originalType = resolveEnabledType(type);
+  if (originalType === undefined) {
+    return {
+      ok: false,
+      reason: `${unavailableAgentTypeMessage(type)} To resume, redefine or enable the same role`,
+      gone: false,
+    };
   }
-  return { ok: true, type: dispatch.type, sessionFile };
+  return { ok: true, type: originalType, sessionFile };
 }

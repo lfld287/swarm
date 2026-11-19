@@ -67,16 +67,15 @@ export function findAgentFile(
  * and write a NEW `code-reviewer.md` stub, which loses to `reviewer.md` on
  * load, leaving the agent enabled while reporting success.
  *
- * The probe stays as the fallback: a built-in that was never ejected has no
- * `sourcePath`, and a path can go stale between a load and this call.
+ * The probe stays as the fallback: a path can go stale between a load and
+ * this call, or a historical record may have no loaded definition.
  *
  * **A package agent has no editable file.** Its `sourcePath` points inside pi's
  * install root, where an edit is lost on the next `pi update` and a delete is
  * undone by the next `pi install`. Passing `source` lets that rule live here
  * rather than at each `/agents` call site: the package path is ignored, and the
  * name probe runs instead — which finds the local stub shadowing it, if one
- * exists, and otherwise nothing. Callers then take their no-file branch, which
- * is the Eject-or-shadow behaviour a not-yet-ejected builtin already gets.
+ * exists, and otherwise nothing. Callers can then eject or shadow the package.
  */
 export function locateAgentFile(
   name: string,
@@ -189,7 +188,7 @@ export function enableInContent(content: string): { content: string; changed: bo
   return { content: kept.join(""), changed: true };
 }
 
-/** Is this the empty stub `/agents` writes when disabling a built-in default? */
+/** Is this a local disable stub left empty after removing `enabled: false`? */
 export function isEmptyStub(content: string): boolean {
   return content.replace(/\r\n/g, "\n").trim() === "---\n---";
 }
@@ -240,8 +239,7 @@ ${input.systemPrompt}
  * `extSelectors` and `mcpToolPatterns` have to come back with the built-ins:
  * `parseToolsField` splits `tools: read, ext:mcp/github` into `["read"]` and
  * `["ext:mcp/github"]`, so writing only the first half hands the ejected copy a
- * *narrower* toolset than the file it came from. That was invisible while Eject
- * only ever ran on built-in defaults, which carry no selectors; a package agent can.
+ * *narrower* toolset than the file it came from.
  *
  * Zero built-ins with selectors present is not `none` — `none` means no tools at
  * all, while `ext:` entries alone mean "extension tools only", which the loader
@@ -267,9 +265,6 @@ export function serializeAgentFile(cfg: AgentConfig): string {
   if (cfg.model) fmFields.push(`model: ${cfg.model}`);
   if (cfg.thinking) fmFields.push(`thinking: ${cfg.thinking}`);
   if (cfg.maxTurns) fmFields.push(`max_turns: ${cfg.maxTurns}`);
-  if (cfg.allowedSubagents !== undefined) {
-    fmFields.push(`allowed_subagents: ${cfg.allowedSubagents === "all" ? "all" : cfg.allowedSubagents.join(", ")}`);
-  }
   fmFields.push(`prompt_mode: ${cfg.promptMode}`);
   if (cfg.extensions === false) fmFields.push("extensions: false");
   else if (Array.isArray(cfg.extensions)) fmFields.push(`extensions: ${cfg.extensions.join(", ")}`);
@@ -278,18 +273,12 @@ export function serializeAgentFile(cfg: AgentConfig): string {
   else if (Array.isArray(cfg.skills)) fmFields.push(`skills: ${cfg.skills.join(", ")}`);
   if (cfg.disallowedTools?.length) fmFields.push(`disallowed_tools: ${cfg.disallowedTools.join(", ")}`);
   if (cfg.inheritContext) fmFields.push("inherit_context: true");
-  // Both cases, not just `true`: with `backgroundByDefault` on, omitting the
-  // field means background, so `false` is the only way to pin an agent file to
-  // foreground and is no longer interchangeable with absence. Reachable since
-  // package agents became ejectable — a built-in default omits the field.
-  if (cfg.runInBackground !== undefined) fmFields.push(`run_in_background: ${cfg.runInBackground}`);
   if (cfg.outputTranscript === false) fmFields.push("output_transcript: false");
   if (cfg.isolated) fmFields.push("isolated: true");
   if (cfg.memory) fmFields.push(`memory: ${cfg.memory}`);
   if (cfg.isolation) fmFields.push(`isolation: ${cfg.isolation}`);
-  // Also only reachable through a package agent: no built-in default sets
-  // either. Omitting them would have the ejected copy silently stop persisting
-  // its session, or write it somewhere else.
+  // Preserve `persist_session` and `session_dir` from the package agent so
+  // ejecting it doesn't change whether or where it persists its session.
   if (cfg.persistSession !== undefined) fmFields.push(`persist_session: ${cfg.persistSession}`);
   if (cfg.sessionDir) fmFields.push(`session_dir: ${JSON.stringify(cfg.sessionDir)}`);
   if (cfg.cacheRetention) fmFields.push(`cache_retention: ${cfg.cacheRetention}`);

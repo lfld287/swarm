@@ -152,8 +152,8 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
     for (const s of SCENARIOS) {
       // Each declares at least one expectation, so no scenario is a no-op.
       expect(s.present.length + s.promptContains.length + s.promptAbsent.length).toBeGreaterThan(0);
-      // Each loaded as ITS OWN agent — guards against runAgent silently falling
-      // back to general-purpose when a template fails to parse/register.
+      // Each template must register under its own name; a parse or registration
+      // failure leaves it missing.
       const cfg = getAgentConfig(s.name);
       expect(cfg, `template "${s.name}" did not register (parse error or name mismatch?)`).toBeDefined();
       expect(cfg?.name).toBe(s.name);

@@ -1,5 +1,5 @@
 /**
- * Agent tool wiring for `resume` + `run_in_background` (#214).
+ * Agent tool wiring for background `resume` (#214).
  *
  * The manager-level mechanics live in agent-manager.test.ts; what this file
  * pins down is what the TOOL hands the manager, which is where a detached
@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTestAgent } from "./helpers/boot-extension.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -98,6 +99,7 @@ describe("Agent tool — background resume wiring", () => {
     mkdirSync(join(cwd, ".pi"), { recursive: true });
     writeFileSync(join(cwd, ".pi", "subagents.json"), JSON.stringify({ schedulingEnabled: false }));
     mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeTestAgent(cwd, "worker");
     process.chdir(cwd);
 
     session = {
@@ -130,10 +132,10 @@ describe("Agent tool — background resume wiring", () => {
   });
 
   /** Spawn a background agent and let it settle, so it holds a resumable session. */
-  async function spawnSettled(tools: Map<string, any>, ctx: any, type = "general-purpose") {
+  async function spawnSettled(tools: Map<string, any>, ctx: any, type = "worker") {
     const res = await tools.get("Agent").execute(
       "spawn-call",
-      { prompt: "first task", description: "First task", subagent_type: type, run_in_background: true },
+      { prompt: "first task", description: "First task", subagent_type: type },
       undefined,
       undefined,
       ctx,
@@ -163,7 +165,7 @@ describe("Agent tool — background resume wiring", () => {
     const toolAbort = new AbortController();
     await tools.get("Agent").execute(
       "resume-call",
-      { prompt: "keep going", description: "Keep going", subagent_type: "general-purpose", resume: id, run_in_background: true },
+      { prompt: "keep going", description: "Keep going", subagent_type: "worker", resume: id },
       toolAbort.signal,
       undefined,
       ctx,
@@ -193,7 +195,7 @@ describe("Agent tool — background resume wiring", () => {
 
     await tools.get("Agent").execute(
       "resume-call",
-      { prompt: "keep going", description: "Keep going", subagent_type: "general-purpose", resume: id, run_in_background: true },
+      { prompt: "keep going", description: "Keep going", subagent_type: "worker", resume: id },
       undefined,
       undefined,
       ctx,
@@ -219,12 +221,12 @@ describe("Agent tool — background resume wiring", () => {
     const { pi, tools, lifecycle, emitted } = makePi();
     subagentsExtension(pi);
     const ctx = makeCtx(cwd);
-    const id = await spawnSettled(tools, ctx, "general-purpose");
+    const id = await spawnSettled(tools, ctx, "worker");
 
     emitted.length = 0;
     const res = await tools.get("Agent").execute(
       "resume-call",
-      { prompt: "keep going", description: "Different description", subagent_type: "explorer", resume: id, run_in_background: true },
+      { prompt: "keep going", description: "Different description", subagent_type: "explorer", resume: id },
       undefined,
       undefined,
       ctx,
@@ -232,9 +234,9 @@ describe("Agent tool — background resume wiring", () => {
 
     const created = emitted.find(e => e.event === "subagents:created");
     expect(created).toBeDefined();
-    expect(created!.payload.type).toBe("general-purpose");
+    expect(created!.payload.type).toBe("worker");
     expect(created!.payload.id).toBe(id);
-    expect(resultText(res)).toContain("Type: general-purpose");
+    expect(resultText(res)).toContain("Type: worker");
 
     await lifecycle.get("session_shutdown")?.({}, ctx);
   });
@@ -252,7 +254,7 @@ describe("Agent tool — background resume wiring", () => {
     vi.mocked(resumeAgent).mockImplementation(() => new Promise(() => {}));
     vi.mocked(resumeAgent).mockClear();
 
-    const params = { prompt: "keep going", description: "Keep going", subagent_type: "general-purpose", resume: id, run_in_background: true };
+    const params = { prompt: "keep going", description: "Keep going", subagent_type: "worker", resume: id };
     await tools.get("Agent").execute("resume-1", params, undefined, undefined, ctx);
     const second = await tools.get("Agent").execute("resume-2", params, undefined, undefined, ctx);
 
@@ -264,32 +266,8 @@ describe("Agent tool — background resume wiring", () => {
     await lifecycle.get("session_shutdown")?.({}, ctx);
   });
 
-  // Resume follows the same default as a fresh spawn — background — so
-  // foreground is now the explicit case rather than the implicit one.
-  it("still resumes in the foreground when run_in_background is false", async () => {
-    const { pi, tools, lifecycle } = makePi();
-    subagentsExtension(pi);
-    const ctx = makeCtx(cwd);
-    const id = await spawnSettled(tools, ctx);
-
-    vi.mocked(resumeAgent).mockResolvedValue({ text: "inline answer" } as any);
-    const res = await tools.get("Agent").execute(
-      "resume-call",
-      { prompt: "keep going", description: "Keep going", subagent_type: "general-purpose", resume: id, run_in_background: false },
-      undefined,
-      undefined,
-      ctx,
-    );
-
-    // Foreground resume returns the answer inline — no background handoff text.
-    expect(resultText(res)).toContain("inline answer");
-    expect(resultText(res)).not.toContain("You will be notified");
-
-    await lifecycle.get("session_shutdown")?.({}, ctx);
-  });
-
-  // #368 — the turn limit a spawn enforces must reach a resume too. Neither
-  // resume branch handed the effective max_turns or a turn counter to the
+  // #368 — the turn limit a spawn enforces must reach a resume too. The old
+  // resume path did not hand the effective max_turns or a turn counter to the
   // runner, so a resumed agent ran unbounded and its widget stayed at turn 1.
   it("passes the effective turn limit and a turn counter to a background resume (#368)", async () => {
     const { pi, tools, lifecycle } = makePi();
@@ -300,7 +278,7 @@ describe("Agent tool — background resume wiring", () => {
     vi.mocked(resumeAgent).mockClear();
     await tools.get("Agent").execute(
       "resume-call",
-      { prompt: "keep going", description: "Keep going", subagent_type: "general-purpose", resume: id, run_in_background: true, max_turns: 7 },
+      { prompt: "keep going", description: "Keep going", subagent_type: "worker", resume: id, max_turns: 7 },
       undefined,
       undefined,
       ctx,
@@ -315,24 +293,4 @@ describe("Agent tool — background resume wiring", () => {
     await lifecycle.get("session_shutdown")?.({}, ctx);
   });
 
-  it("passes the effective turn limit to a foreground resume (#368)", async () => {
-    const { pi, tools, lifecycle } = makePi();
-    subagentsExtension(pi);
-    const ctx = makeCtx(cwd);
-    const id = await spawnSettled(tools, ctx);
-
-    vi.mocked(resumeAgent).mockClear();
-    await tools.get("Agent").execute(
-      "resume-call",
-      { prompt: "keep going", description: "Keep going", subagent_type: "general-purpose", resume: id, run_in_background: false, max_turns: 7 },
-      undefined,
-      undefined,
-      ctx,
-    );
-
-    expect(resumeAgent).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(resumeAgent).mock.calls[0][2].maxTurns).toBe(7);
-
-    await lifecycle.get("session_shutdown")?.({}, ctx);
-  });
 });

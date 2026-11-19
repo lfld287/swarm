@@ -238,7 +238,7 @@ describe("isEmptyStub", () => {
     expect(isEmptyStub("\uFEFF---\n---")).toBe(true);
   });
 
-  it("recognizes the stub /agents writes to disable a built-in default", () => {
+  it("recognizes the stub /agents writes to shadow a package role", () => {
     expect(isEmptyStub("---\n---\n")).toBe(true);
     expect(isEmptyStub(enableInContent("---\nenabled: false\n---\n").content)).toBe(true);
   });
@@ -328,7 +328,7 @@ describe("findAgentFile", () => {
         .toMatchObject({ location: "personal" });
     });
 
-    it("falls back to the <type>.md probe for a built-in with no source file", () => {
+    it("finds the local <type>.md file when no source path was supplied", () => {
       write(join(tmpDir, ".pi", "agents"), "scout");
 
       expect(locateAgentFile("scout", undefined, tmpDir)).toEqual({

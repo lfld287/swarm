@@ -1,6 +1,6 @@
 # Shipping subagents in a pi package
 
-A pi package can declare its own subagents and workflow scripts. Installing the package is then the whole setup — no copying `.md` files into every project's `.pi/agents/`, and no sync script running on container start ([#109](https://github.com/tintinweb/pi-subagents/issues/109)).
+A pi package can declare its own `.md` agents. Installing the package is then the whole setup — no copying `.md` files into every project's `.pi/agents/`, and no sync script running on container start ([#109](https://github.com/tintinweb/pi-subagents/issues/109)).
 
 This guide is for both sides of that: authoring a package that ships agents, and controlling which packages a machine accepts them from.
 
@@ -24,8 +24,7 @@ The mechanism here is the same shape as pi's, with one deliberate difference: **
   "pi": {
     "extensions": ["./src/index.ts"],
     "subagents": {
-      "agents": ["./agents"],
-      "workflows": ["./workflows"]
+      "agents": ["./agents"]
     }
   }
 }
@@ -40,14 +39,12 @@ Adding `pi.subagents` is safe for pi itself: its manifest reader looks at `exten
 ```
 my-subagents/
 ├── package.json
-├── agents/
-│   ├── researcher.md
-│   └── reviewer.md
-└── workflows/
-    └── audit.js
+└── agents/
+    ├── researcher.md
+    └── reviewer.md
 ```
 
-An agent file is an ordinary agent `.md` — the same frontmatter a `.pi/agents/` file takes, documented in [`README.md`](../README.md#custom-agents). A workflow file is an ordinary saved workflow, and still has to carry its `export const meta = …` declaration to count as one ([`workflows.md`](workflows.md)).
+An agent file is an ordinary agent `.md` — the same frontmatter a `.pi/agents/` file takes, documented in [`README.md`](../README.md#custom-agents).
 
 ```markdown
 ---
@@ -79,7 +76,7 @@ Entries are paths relative to the package root.
 
 | Entry | Meaning |
 |---|---|
-| `"./agents"` | A directory. Scanned for `*.md` (`*.js` for workflows), non-recursively. |
+| `"./agents"` | A directory. Scanned for `*.md`, non-recursively. |
 | `"./agents/one.md"` | A single file, taken as-is. |
 | `"!./agents/wip.md"` | An exclusion. Applies to a file inside an included directory, which is the only form that does anything useful. |
 
@@ -94,7 +91,7 @@ Glob patterns are deliberately **not** supported. Pi expands globs because it re
 All four mean the same thing. The top-level `pi-subagents` key is the one [`nicobailon/pi-subagents`](https://github.com/nicobailon/pi-subagents) reads, so a single manifest works with either extension.
 
 ```jsonc
-"pi": { "subagents": { "agents": ["./agents"], "workflows": ["./flows"] } }
+"pi": { "subagents": { "agents": ["./agents"] } }
 "pi": { "subagents": ["./agents"] }            // shorthand for { "agents": [...] }
 "pi-subagents": { "agents": ["./agents"] }
 "pi-subagents": ["./agents"]                   // shorthand for { "agents": [...] }
@@ -126,17 +123,12 @@ Lowest to highest:
 
 | | Source |
 |---|---|
-| 1 (lowest) | Built-in agents (`general-purpose`, `Explore`, `Plan`) |
-| 2 | Installed pi packages |
-| 3 | `$PI_CODING_AGENT_DIR/agents/*.md` (global) |
-| 4 | `.agents/agents/*.md` (project workspace) |
-| 5 (highest) | `.pi/agents/*.md` (project) |
+| 1 (lowest) | Installed pi packages |
+| 2 | `$PI_CODING_AGENT_DIR/agents/*.md` (global) |
+| 3 | `.agents/agents/*.md` (project workspace) |
+| 4 (highest) | `.pi/agents/*.md` (project) |
 
 A package can offer a `reviewer`; it can never take the name from a `reviewer` of yours. This mirrors pi's own precedence for package-provided skills and Claude Code's for plugin agents.
-
-Saved workflows resolve first-hit-wins over the same ordering, so package directories are searched last.
-
-One consequence worth knowing: a package agent *does* outrank a built-in. A package could ship a `general-purpose` — which is also the default `fallbackSubagent` — and take over unspecified delegation. Narrow the gate below if that matters for your setup.
 
 ### In `/agents`
 
@@ -151,12 +143,11 @@ An agent the *package author* shipped with `enabled: false` shows as disabled an
 
 ### Turning it off
 
-`packageAgents` and `packageWorkflows` in [`subagents.json`](../README.md#persistent-settings) both default to `true`:
+`packageAgents` in [`subagents.json`](../README.md#persistent-settings) is enabled when unset:
 
 ```json
 {
-  "packageAgents": ["my-subagents"],
-  "packageWorkflows": false
+  "packageAgents": ["my-subagents"]
 }
 ```
 
@@ -168,9 +159,7 @@ An agent the *package author* shipped with `enabled: false` shows as disabled an
 
 A list entry matches the unscoped short name (`@acme/tools` → `tools`), the full package name, or the settings source string, case-insensitively. A bare string is read as a one-entry list, so a `"my-pkg"` typo narrows the gate rather than silently widening it.
 
-The two are separate on purpose: an agent is markdown handed to a model, a workflow is JavaScript this extension executes, so package agents can be accepted while package workflow scripts are refused.
-
-Both appear in `/agents → Settings` as on/off rows. An allowlist is hand-written in `subagents.json`; toggling the row replaces it, and the toast says what it replaced.
+`/agents → Settings → Package agents` toggles it on or off. Write an allowlist in `subagents.json`; toggling the row replaces it, and the toast says what it replaced.
 
 ### Why on by default
 
@@ -185,7 +174,7 @@ A declared `.md` agent is strictly less privileged than what the same package al
 1. `pi list` — is the package in pi's settings at all? Discovery reads that array, not `node_modules`, and not a `pi -e` source: a `--extension` install is resolved for that one run and never written to `packages[]`, so its agents stay invisible even though its extensions and skills load.
 2. Does `package.json` carry `pi.subagents` (or `pi-subagents`)? A `pi` key that declares only `extensions` contributes no agents; the conventional `agents/` directory is not scanned.
 3. Is the file `*.md` directly inside a declared directory? The scan is not recursive.
-4. Does the frontmatter parse, and does it have a `name:`? A broken file is skipped with a `[pi-subagents] Skipping agent file …` warning on stderr.
+4. Does the frontmatter parse, and are you using the right type (`name:` or, if omitted, the filename)? A broken file is skipped with a `[pi-subagents] Skipping agent file …` warning on stderr.
 5. Is `packageAgents` set to `false` or to a list that does not include it? Check `/agents → Settings → Package agents`.
 6. Is the package configured only in an untrusted project's `.pi/settings.json`? Trust the project, or install it globally.
 
@@ -201,11 +190,10 @@ A declared `.md` agent is strictly less privileged than what the same package al
 
 | | |
 |---|---|
-| Manifest keys | `pi.subagents.agents`, `pi.subagents.workflows`, `pi-subagents.agents`, `pi-subagents.workflows`, plus the bare-array shorthand for each |
-| Settings | `packageAgents`, `packageWorkflows` — `boolean \| string[]`, default `true` |
+| Manifest keys | `pi.subagents.agents`, `pi-subagents.agents`, plus the bare-array shortcuts |
+| Settings | `packageAgents` — `boolean \| string[]`, enabled when unset |
 | Agent file layout | `<declared dir>/*.md`, non-recursive |
-| Workflow file layout | `<declared dir>/*.js`, must carry `export const meta = …` |
 | Per-file size ceiling | 1 MiB |
 | Discovery source | pi's `settings.json → packages[]`, global and project |
-| Precedence | Above built-ins, below every local agent |
+| Precedence | Lowest; below all user and project definitions |
 | Implementation | [`src/package-resources.ts`](../src/package-resources.ts) |

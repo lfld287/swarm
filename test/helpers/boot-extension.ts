@@ -152,3 +152,23 @@ export function hermeticDir(opts: {
     },
   };
 }
+
+/** A small, explicit role fixture for tests exercising dispatch rather than agent policy. */
+export function testAgentFile(name: string, tools = "read"): string {
+  return `---\ndescription: ${name} fixture\ntools: ${tools}\n---\nFollow the test prompt.\n`;
+}
+
+export function writeTestAgent(cwd: string, name: string, tools?: string): void {
+  const dir = join(cwd, ".pi", "agents");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${name}.md`), testAgentFile(name, tools));
+}
+
+/** The real manager surface published by the extension under test. */
+export type TestManager = Pick<import("../../src/agent-manager.js").AgentManager, "spawn" | "getRecord" | "waitForAll">;
+
+export function publishedManager(): TestManager {
+  const manager = (globalThis as Record<symbol, TestManager>)[Symbol.for("pi-subagents:manager")];
+  if (!manager) throw new Error("No subagent manager was published");
+  return manager;
+}

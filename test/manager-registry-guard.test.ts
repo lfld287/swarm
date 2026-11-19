@@ -11,7 +11,8 @@
  * The fix: the first activation claims the slot, later activations leave it
  * alone, and only the owner's shutdown releases it.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type Hermetic, hermeticDir, testAgentFile } from "./helpers/boot-extension.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -62,7 +63,7 @@ async function spawnBackground(tools: Map<string, any>): Promise<string> {
   vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}) as any); // never resolves
   const r = await tools.get("Agent").execute(
     "tc-spawn",
-    { prompt: "go", description: "registry test agent", subagent_type: "general-purpose", run_in_background: true },
+    { prompt: "go", description: "registry test agent", subagent_type: "worker" },
     undefined,
     undefined,
     ctx(),
@@ -77,6 +78,12 @@ afterEach(() => {
   else (globalThis as any)[MANAGER_KEY] = priorGlobal;
   vi.mocked(runAgent).mockReset();
 });
+
+let project: Hermetic;
+beforeEach(() => {
+  project = hermeticDir({ agentFiles: { worker: testAgentFile("worker") } });
+});
+afterEach(() => project.restore());
 
 describe("Symbol.for manager registry across activations", () => {
   it("child activation does not overwrite the root entry; child shutdown does not delete it", async () => {
@@ -122,22 +129,11 @@ describe("the registry spawn strips internal capabilities", () => {
     subagentsExtension(root.pi);
     vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}) as any);
     const entry = (globalThis as any)[MANAGER_KEY];
-    const id = entry.spawn(root.pi, ctx(), "general-purpose", "go", {
-      description: "forged", isBackground: true, ...options,
+    const id = entry.spawn(root.pi, ctx(), "worker", "go", {
+      description: "forged", ...options,
     });
     return { entry, id, root, runOpts: () => vi.mocked(runAgent).mock.calls[0][3] as any };
   }
-
-  it("refuses a forged nesting, so the agent cannot hide under someone else's id", async () => {
-    // A nested record is filtered out of every top-level surface and inherits
-    // its parent's delegation budget.
-    const { entry, id, root } = forge({ parentAgentId: "victim-agent-id", depth: 9, maxSubagentDepth: 99 });
-
-    expect(entry.getRecord(id)).toMatchObject({
-      parentAgentId: undefined, depth: 1, maxSubagentDepth: undefined,
-    });
-    await root.lifecycle.get("session_shutdown")?.();
-  });
 
   it("refuses a forged transcript directory and config root", async () => {
     // rootSessionId names a directory the transcript is written into, and
@@ -145,6 +141,7 @@ describe("the registry spawn strips internal capabilities", () => {
     const { entry, id, root, runOpts } = forge({ rootSessionId: "../../elsewhere", configCwd: "/etc" });
 
     expect(entry.getRecord(id).rootSessionId).toBeUndefined();
+    await Promise.resolve();
     expect(runOpts().configCwd).toBeUndefined();
     await root.lifecycle.get("session_shutdown")?.();
   });
@@ -152,6 +149,7 @@ describe("the registry spawn strips internal capabilities", () => {
   it("refuses a forged session file, which would replay someone else's conversation", async () => {
     const { root, runOpts } = forge({ resumeSessionFile: "/home/victim/.pi/agent/sessions/private.jsonl" });
 
+    await Promise.resolve();
     expect(runOpts().resumeSessionFile).toBeUndefined();
     await root.lifecycle.get("session_shutdown")?.();
   });
@@ -161,7 +159,7 @@ describe("the registry spawn strips internal capabilities", () => {
     // agent's name and make `@handle` resolve to either of two records.
     const { entry, id, root } = forge({ reclaim: { handle: "explore", alias: "auth-audit" } });
 
-    expect(entry.getRecord(id)).toMatchObject({ handle: "general-purpose", alias: undefined });
+    expect(entry.getRecord(id)).toMatchObject({ handle: "worker", alias: undefined });
     await root.lifecycle.get("session_shutdown")?.();
   });
 });

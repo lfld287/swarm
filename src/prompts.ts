@@ -16,30 +16,6 @@ export interface PromptExtras {
    * to stay in the copy.
    */
   worktreeBase?: string;
-  /**
-   * Set only for a workflow's own children, and only when they have no
-   * `StructuredOutput` tool to answer through.
-   *
-   * A workflow child's final text is not read by a human — it is the value
-   * `agent()` resolves to, and the script interpolates it straight into the
-   * next stage's prompt. Without this, children answer the way every other
-   * subagent does (a report addressed to a reader), and the padding becomes
-   * input tokens for the stage downstream. Claude Code's `Workflow` tool
-   * documents this contract to the script-writing model; this is the end of it
-   * that makes the documentation true.
-   *
-   * Deliberately NOT applied to every subagent. In pi an ordinary agent's
-   * output IS read by a human — through FleetView, the conversation viewer and
-   * `get_subagent_result` — so terse raw data would be the wrong answer there.
-   */
-  workflowChild?: boolean;
-  /**
-   * Set only for the built-in general-purpose, and only when it received the
-   * nested `Agent` tool. Claude Code's general-purpose prompt closes with this
-   * line; without it a delegating agent tends to hand its whole task to one
-   * child. An agent that cannot spawn gets nothing to misread.
-   */
-  delegationGuideline?: boolean;
 }
 
 /**
@@ -84,20 +60,6 @@ Work only inside it — never in ${extras.worktreeBase}, even if other instructi
 </worktree_isolation>`
     : "";
 
-  // The script, not a person, reads what this child returns — see
-  // `PromptExtras.workflowChild` for why only workflow children get this.
-  const workflowBlock = extras?.workflowChild
-    ? `\n\n<workflow_child>
-Your final message IS the return value of this task. A workflow script captures it and passes it to the next stage; no person reads it.
-Return only the answer, in exactly the shape the prompt asks for — no preamble, no summary of what you did, no offer to continue.
-</workflow_child>`
-    : "";
-
-  // Append mode only: the one agent that gets this, general-purpose, is append.
-  const delegationBlock = extras?.delegationGuideline
-    ? "\n\nYou are already the dedicated agent for this task. Do the work directly — do not re-delegate your entire assignment to another single subagent."
-    : "";
-
   // Build optional extras suffix
   const extraSections: string[] = [];
   if (extras?.memoryBlock) {
@@ -135,7 +97,7 @@ You are operating as a sub-agent invoked to handle a specific task.
     // placed verbatim (no wrapper tag) so it forms an identical byte prefix
     // with the parent session, maximising KV cache hits. The <active_agent>
     // tag and env block vary per call and are placed after the cached prefix.
-    return identity + "\n\n" + bridge + "\n\n" + activeAgentTag + envBlock + worktreeBlock + workflowBlock + delegationBlock + customSection + extrasSuffix;
+    return identity + "\n\n" + bridge + "\n\n" + activeAgentTag + envBlock + worktreeBlock + customSection + extrasSuffix;
   }
 
   // "replace" mode — env header + the config's full system prompt
@@ -144,7 +106,7 @@ You have been invoked to handle a specific task autonomously.
 
 ${envBlock}`;
 
-  return activeAgentTag + replaceHeader + worktreeBlock + workflowBlock + "\n\n" + config.systemPrompt + extrasSuffix;
+  return activeAgentTag + replaceHeader + worktreeBlock + "\n\n" + config.systemPrompt + extrasSuffix;
 }
 
 /**
@@ -200,6 +162,4 @@ function cwdSection(cwd: string): string {
 
 /** Fallback base prompt when parent system prompt is unavailable in append mode. */
 const genericBase = `# Role
-You are a general-purpose coding agent for complex, multi-step tasks.
-You have full access to read, write, edit files, and execute commands.
-Do what has been asked; nothing more, nothing less.`;
+Follow the role instructions below. Use only the tools actually available to you.`;

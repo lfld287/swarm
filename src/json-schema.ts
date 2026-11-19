@@ -1,36 +1,8 @@
 /**
- * json-schema.ts — validating a script-supplied JSON Schema.
- *
- * `agent(prompt, { schema })` hands us a raw JSON Schema written by a model, to
- * be used two ways: as a tool's `parameters` (so the provider fills the fields)
- * and as the check that decides whether what came back is usable.
- *
- * ## Ajv, for compatibility with Claude Code
- *
- * Both jobs — deciding whether a schema is usable, and whether a payload
- * matches it — use Ajv, so a Claude Code workflow script sees the same
- * refusals here, with the same text. The checks run in this order: a size
- * guard, `$async`, the draft-07 meta-schema, `compile` (bad `pattern`, unresolvable `$ref`, and, in Ajv's
- * default strict mode, any unknown keyword), then the unsatisfiability lint
- * below. Formats are not validated, in the schema or the payload.
- *
- * `logger: false` is the one option of ours: strict mode *logs* some findings
- * (`strictTypes`) rather than throwing, and the default logger would write
- * them into pi's TUI. It changes no accept/refuse decision.
- *
- * ## Why we validate at all
- *
- * Nothing in pi checks a tool call's arguments against the tool's `parameters`.
- * `validateToolCall`/`validateToolArguments` exist in `pi-ai` but are never
- * called from either shipped package, so a schema on a tool is a *prompt to the
- * provider*, not an enforcement point. Every guarantee the script gets about
- * the shape of its result is made here.
- *
- * Ajv compiles validators with `new Function`, so this runs host-side only —
- * never inside the workflow worker, whose vm has code generation disabled.
- *
- * Pure and pi-free on purpose, so `runtime.ts` can import it without dragging
- * sessions and models into the runtime's tests.
+ * Compile and validate object-rooted JSON Schemas for structured tool output.
+ * Ajv checks the draft-07 meta-schema and compiles a validator; formats are
+ * not validated. Disable logging so strict-mode diagnostics do not write to
+ * the TUI. The contradiction check runs after successful compilation.
  */
 
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
@@ -43,10 +15,10 @@ const MAX_SCHEMA_DEPTH = 10_000;
 const MAX_ERROR_KEY = 80;
 const MAX_ERROR_VALUE = 300;
 
-const INVALID_PREFIX = "agent({schema}) received an invalid JSON Schema: ";
+const INVALID_PREFIX = "Invalid JSON Schema: ";
 
 export interface CompiledSchema {
-  /** The schema as given, for the tool's `parameters` and the journal key. */
+  /** The schema as given, for the tool's `parameters`. */
   readonly schema: Record<string, unknown>;
   /** `true`, or a human-readable account of what is wrong. */
   check(value: unknown): true | string;
@@ -56,38 +28,26 @@ export type SchemaCompilation =
   | { ok: true; compiled: CompiledSchema }
   | { ok: false; message: string };
 
-/**
- * Turn a script-supplied schema into something we can check against.
- *
- * Rejects up front rather than at the first tool call, so the author hears
- * about a bad schema before a model is paid to discover it. Something that is
- * not an object at all is refused with our own message; everything else —
- * including an object whose root `type` is not `"object"` — goes through
- * the checks below, in order.
- */
+/** Compile a schema up front, before using it as a structured tool input. */
 export function compileJsonSchema(schema: unknown): SchemaCompilation {
   if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
-    return { ok: false, message: "agent() opts.schema must be a JSON Schema object." };
+    return { ok: false, message: "Schema must be a JSON Schema object." };
   }
   const root = schema as Record<string, unknown>;
 
   try {
     JSON.stringify(root);
   } catch {
-    return { ok: false, message: "agent() opts.schema must be JSON-serializable." };
+    return { ok: false, message: "Schema must be JSON-serializable." };
   }
 
-  // Checked here so a schema the validator cannot use fails at the call that
-  // wrote it, rather than inside a child's tool handler where the only symptom
-  // is an agent that never returns.
   let validate: ValidateFunction;
   try {
     if (exceedsSizeGuard(root, { remaining: MAX_SCHEMA_NODES }, 0)) {
       return { ok: false, message: `${INVALID_PREFIX}schema too large` };
     }
     if (root.$async) return { ok: false, message: `${INVALID_PREFIX}$async schemas are not supported` };
-    // A fresh instance per schema: nothing one script
-    // compiles can be resolved by another's `$ref`.
+    // Keep `$ref` resolution independent across compiled schemas.
     const ajv = new Ajv({ allErrors: true, validateFormats: false, multipleOfPrecision: 6, logger: false });
     if (!ajv.validateSchema(root)) return { ok: false, message: INVALID_PREFIX + ajv.errorsText(ajv.errors) };
     validate = ajv.compile(root);
@@ -105,9 +65,7 @@ export function compileJsonSchema(schema: unknown): SchemaCompilation {
           : "one property or item sub-schema admits no value, so any output that fills it in fails validation";
     return {
       ok: false,
-      message:
-        `agent({schema}) received an unusable JSON Schema — ${consequence}: ${finding.message}. `
-        + "The subagent was not started — fix the schema and call agent() again.",
+      message: `Unusable JSON Schema — ${consequence}: ${finding.message}.`,
     };
   }
 
@@ -147,7 +105,7 @@ function checkAgainst(validate: ValidateFunction, value: unknown): true | string
   return errors.map(error => describeError(error, value)).join(", ");
 }
 
-/** One Ajv error as the child reads it: the path, the message, and what it saw. */
+/** Describe an Ajv error with its path, message, and relevant value. */
 function describeError(error: ErrorObject, root: unknown): string {
   const base = `${error.instancePath || "root"}: ${error.message}`;
   const params = error.params as Record<string, unknown>;
@@ -211,7 +169,7 @@ const truncate = (text: string, max: number) => (text.length > max ? `${text.sli
 /* ------------------------------------------------------------------ *
  * The unsatisfiability lint
  *
- * Five findings, each worded for the script author. It reports only provable contradictions — a `required` name the
+ * Reports only provable contradictions — a `required` name the
  * schema also forbids, an `enum` or `const` that contradicts `type`, crossed
  * bounds — never style. `whole` means no output can pass; `subschema` means
  * one optional property or array item can never be filled.

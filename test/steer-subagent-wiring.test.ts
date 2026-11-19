@@ -5,15 +5,13 @@
  * A steer issued between spawn and session creation is parked on the record as
  * `pendingSteers` and flushed later by AgentManager. The tool tells the caller
  * the message was queued, so if the queue is dropped or overwritten the user is
- * told their correction landed when it never will. That whole branch had no
- * coverage — the only existing assertion on this tool is that a nested agent id
- * reports "Agent not found".
+ * told their correction landed when it never will.
  *
  * The plain rejections (unknown id, non-running status) are deliberately not
  * tested: they are single-line guards whose failure is immediately visible in
  * the tool's own reply.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -22,7 +20,7 @@ vi.mock("../src/agent-runner.js", async () => {
 
 import { runAgent, steerAgent } from "../src/agent-runner.js";
 import subagentsExtension from "../src/index.js";
-import { ctx, flush, makePi, textOf } from "./helpers/boot-extension.js";
+import { ctx, flush, type Hermetic, hermeticDir, makePi, testAgentFile, textOf } from "./helpers/boot-extension.js";
 
 // steerAgent and runAgent are module-level mocks shared by every case here, so
 // call history has to be reset or a "was never called" assertion depends on the
@@ -63,7 +61,7 @@ function heldRun() {
 async function spawnBackground(tools: Map<string, any>): Promise<string> {
   const r = await tools.get("Agent").execute(
     "tc-spawn",
-    { prompt: "go", description: "steer wiring agent", subagent_type: "general-purpose", run_in_background: true },
+    { prompt: "go", description: "steer wiring agent", subagent_type: "worker" },
     undefined,
     undefined,
     ctx(),
@@ -73,6 +71,12 @@ async function spawnBackground(tools: Map<string, any>): Promise<string> {
 
 const steer = (tools: Map<string, any>, agent_id: string, message: string) =>
   tools.get("steer_subagent").execute("tc-steer", { agent_id, message }, undefined, undefined, ctx());
+
+let project: Hermetic;
+beforeEach(() => {
+  project = hermeticDir({ agentFiles: { worker: testAgentFile("worker") } });
+});
+afterEach(() => project.restore());
 
 describe("steer_subagent before the session exists", () => {
   it("queues the message on the record and says so", async () => {

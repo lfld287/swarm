@@ -4,8 +4,7 @@
  * The manager evicts a finished record ten minutes after it settles, and a
  * reload or restart drops it at once, but the agent's conversation is still in
  * its saved pi session. `Agent({ resume })` reopens it from the session's
- * `subagents:record` entry, under the same id; a workflow's `resume` reopens a
- * child from what its host kept for the run (#331, #385).
+ * `subagents:record` entry under the same id (#331, #385).
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,8 +21,7 @@ import { agentRecordEntryData, worktreeLost } from "../src/agent-record-entry.js
 import { runAgent } from "../src/agent-runner.js";
 import subagentsExtension from "../src/index.js";
 import type { AgentRecord } from "../src/types.js";
-import { createWorkflowHost } from "../src/workflow/host.js";
-import { ctx, type Hermetic, hermeticDir, makePi, textOf } from "./helpers/boot-extension.js";
+import { ctx, type Hermetic, hermeticDir, makePi, publishedManager, testAgentFile, textOf } from "./helpers/boot-extension.js";
 
 const MANAGER_KEY = Symbol.for("pi-subagents:manager");
 
@@ -36,7 +34,7 @@ let sessionFile: string;
 
 beforeEach(() => {
   // No transcripts: they would stream from the stub session's events.
-  hermetic = hermeticDir({ settings: { schedulingEnabled: false, outputTranscript: false } });
+  hermetic = hermeticDir({ agentFiles: { Surveyor: testAgentFile("Surveyor") }, settings: { schedulingEnabled: false, outputTranscript: false } });
   sessionDir = mkdtempSync(join(tmpdir(), "pi-evicted-resume-"));
   sessionFile = join(sessionDir, "child.jsonl");
   writeFileSync(sessionFile, "");
@@ -75,8 +73,9 @@ function boot(branch: any[]) {
   booted = lifecycle;
   const context = ctx({ sessionManager: { getSessionId: vi.fn(() => "s1"), getBranch: vi.fn(() => branch) } });
   const agent = (params: Record<string, unknown>) =>
-    tools.get("Agent").execute("tc", { description: "Review the change", subagent_type: "Explore", ...params }, undefined, undefined, context);
-  return { agent, lifecycle, manager: (globalThis as any)[MANAGER_KEY] };
+    tools.get("Agent").execute("tc", { description: "Review the change", subagent_type: "Surveyor", ...params }, undefined, undefined, context);
+  const read = (id: string) => tools.get("get_subagent_result").execute("read", { agent_id: id }, undefined, undefined, context);
+  return { agent, read, lifecycle, manager: publishedManager() };
 }
 
 /**
@@ -86,7 +85,8 @@ function boot(branch: any[]) {
 async function finishedAgent(branch: any[], { inMemory = false } = {}): Promise<string> {
   settleWith("FIRST-RUN", inMemory ? undefined : sessionFile);
   const { agent, lifecycle } = boot(branch);
-  const res = await agent({ prompt: "Review the change.", run_in_background: false });
+  const res = await agent({ prompt: "Review the change." });
+  await publishedManager().waitForAll();
   await lifecycle.get("session_shutdown")?.();
   delete (globalThis as any)[MANAGER_KEY];
   booted = undefined;
@@ -99,16 +99,17 @@ describe("Agent({ resume }) once the live record is gone", () => {
     const id = await finishedAgent(branch);
 
     settleWith("RESUMED-RUN", sessionFile);
-    const { agent } = boot(branch);
-    const res = await agent({ prompt: "Now check the tests.", resume: id, run_in_background: false });
+    const { agent, read, manager } = boot(branch);
+    const res = await agent({ prompt: "Now check the tests.", resume: id });
+    await manager.waitForAll();
 
     const [, type, prompt, options] = vi.mocked(runAgent).mock.lastCall!;
-    expect(type).toBe("Explore");
+    expect(type).toBe("Surveyor");
     expect(prompt).toBe("Now check the tests.");
     expect(options.resumeSessionFile).toBe(sessionFile);
     expect(options.agentId).toBe(id);
     expect((res as any).details.agentId).toBe(id);
-    expect(textOf(res)).toContain("RESUMED-RUN");
+    expect(textOf(await read(id))).toContain("RESUMED-RUN");
   });
 
   it("reopens in the background and reports the same id", async () => {
@@ -117,7 +118,7 @@ describe("Agent({ resume }) once the live record is gone", () => {
 
     settleWith("RESUMED-RUN", sessionFile);
     const { agent } = boot(branch);
-    const res = await agent({ prompt: "Continue.", resume: id, run_in_background: true });
+    const res = await agent({ prompt: "Continue.", resume: id });
 
     expect(textOf(res)).toContain("resumed from its saved session in background");
     expect(textOf(res)).toContain(`Agent ID: ${id}`);
@@ -129,13 +130,14 @@ describe("Agent({ resume }) once the live record is gone", () => {
     const branch: any[] = [];
     settleWith("FIRST-RUN", sessionFile);
     const { agent, manager } = boot(branch);
-    const id = (await agent({ prompt: "Review the change.", run_in_background: false }) as any).details.agentId;
+    const id = (await agent({ prompt: "Review the change." }) as any).details.agentId;
 
+    await manager.waitForAll();
     vi.advanceTimersByTime(11 * 60_000);
     expect(manager.getRecord(id)).toBeUndefined();
 
     settleWith("RESUMED-RUN", sessionFile);
-    const res = await agent({ prompt: "Continue.", resume: id, run_in_background: false });
+    const res = await agent({ prompt: "Continue.", resume: id });
 
     expect(vi.mocked(runAgent).mock.lastCall![3].resumeSessionFile).toBe(sessionFile);
     expect((res as any).details.agentId).toBe(id);
@@ -146,15 +148,16 @@ describe("Agent({ resume }) once the live record is gone", () => {
     const branch: any[] = [];
     settleWith("FIRST-RUN", sessionFile);
     const first = boot(branch);
-    const res = await first.agent({ prompt: "Review the change.", run_in_background: false });
+    const res = await first.agent({ prompt: "Review the change." });
     const id = (res as any).details.agentId;
-    const transcript = first.manager.getRecord(id).outputFile;
+    const transcript = first.manager.getRecord(id)!.outputFile!;
+    await publishedManager().waitForAll();
     await first.lifecycle.get("session_shutdown")?.();
     delete (globalThis as any)[MANAGER_KEY];
 
     settleWith("RESUMED-RUN", sessionFile);
     const { agent } = boot(branch);
-    await agent({ prompt: "Continue.", resume: id, run_in_background: false });
+    await agent({ prompt: "Continue.", resume: id });
 
     expect(readFileSync(transcript, "utf-8")).toContain("Review the change.");
   });
@@ -165,13 +168,13 @@ describe("Agent({ resume }) once the live record is gone", () => {
 
     settleWith("OTHER", undefined);
     const { agent, manager } = boot(branch);
-    const other = (await agent({ prompt: "Something else.", run_in_background: false }) as any).details.agentId;
-    expect(manager.getRecord(other).handle).toBe("explore");
+    const other = (await agent({ prompt: "Something else." }) as any).details.agentId;
+    expect(manager.getRecord(other).handle).toBe("surveyor");
 
     settleWith("RESUMED-RUN", sessionFile);
-    await agent({ prompt: "Continue.", resume: id, run_in_background: false });
+    await agent({ prompt: "Continue.", resume: id });
 
-    expect(manager.getRecord(id).handle).not.toBe("explore");
+    expect(manager.getRecord(id).handle).not.toBe("surveyor");
   });
 
   it("stays resumable after a reopen that failed before its session existed", async () => {
@@ -182,16 +185,19 @@ describe("Agent({ resume }) once the live record is gone", () => {
     // which file it was continuing. Its saved record must still name one.
     vi.mocked(runAgent).mockRejectedValueOnce(new Error("provider unavailable"));
     const second = boot(branch);
-    await second.agent({ prompt: "Continue.", resume: id, run_in_background: false });
+    await second.agent({ prompt: "Continue.", resume: id });
+    await publishedManager().waitForAll();
     await second.lifecycle.get("session_shutdown")?.();
     delete (globalThis as any)[MANAGER_KEY];
 
     settleWith("RESUMED-RUN", sessionFile);
-    const { agent } = boot(branch);
-    const res = await agent({ prompt: "Try again.", resume: id, run_in_background: false });
+    const { agent, read, manager } = boot(branch);
+    const res = await agent({ prompt: "Try again.", resume: id });
+    expect(res.details.agentId).toBe(id);
+    await manager.waitForAll();
 
     expect(vi.mocked(runAgent).mock.lastCall![3].resumeSessionFile).toBe(sessionFile);
-    expect(textOf(res)).toContain("RESUMED-RUN");
+    expect(textOf(await read(id))).toContain("RESUMED-RUN");
   });
 
   it("refuses, starting nothing, when the saved session file is gone", async () => {
@@ -291,7 +297,7 @@ describe("Agent({ resume }) of an evicted agent keeps its own model and thinking
       sessionManager: { getSessionId: vi.fn(() => "s1"), getBranch: vi.fn(() => branch) },
     });
     const agent = (params: Record<string, unknown>) =>
-      tools.get("Agent").execute("tc", { description: "Review the change", subagent_type: "Explore", ...params }, undefined, undefined, context);
+      tools.get("Agent").execute("tc", { description: "Review the change", subagent_type: "Surveyor", ...params }, undefined, undefined, context);
     return { agent, lifecycle };
   }
 
@@ -302,7 +308,8 @@ describe("Agent({ resume }) of an evicted agent keeps its own model and thinking
   async function ranOnB(branch: any[], params: Record<string, unknown> = { model: "pB/model-b", thinking: "high" }): Promise<string> {
     settleWithSession("FIRST-RUN", sessionFile, modelB, "high");
     const first = bootWith(branch, modelA, "medium");
-    const res = await first.agent({ prompt: "Review the change.", run_in_background: false, ...params });
+    const res = await first.agent({ prompt: "Review the change.", ...params });
+    await publishedManager().waitForAll();
     await first.lifecycle.get("session_shutdown")?.();
     delete (globalThis as any)[MANAGER_KEY];
     booted = undefined;
@@ -319,28 +326,15 @@ describe("Agent({ resume }) of an evicted agent keeps its own model and thinking
 
     settleWithSession("RESUMED-RUN", sessionFile, modelB, "high");
     const { agent } = bootWith(branch, modelA, "medium");
-    const res = await agent({ prompt: "Now check the tests.", resume: id, run_in_background: false });
+    const res = await agent({ prompt: "Now check the tests.", resume: id });
+    await publishedManager().waitForAll();
 
     const options = vi.mocked(runAgent).mock.lastCall![3] as any;
     expect(options.resumeSessionFile).toBe(sessionFile);
     expect(options.model).toBeUndefined();
     expect(options.thinkingLevel).toBeUndefined();
-    // Once the session reports, the result names the model the run used.
-    expect((res as any).details.modelName).toBe("model b");
-  });
-
-  it("passes neither on a background reopen either", async () => {
-    const branch: any[] = [];
-    const id = await ranOnB(branch);
-
-    settleWithSession("RESUMED-RUN", sessionFile, modelB, "high");
-    const { agent } = bootWith(branch, modelA, "medium");
-    await agent({ prompt: "Continue.", resume: id, run_in_background: true });
-
-    const options = vi.mocked(runAgent).mock.lastCall![3] as any;
-    expect(options.resumeSessionFile).toBe(sessionFile);
-    expect(options.model).toBeUndefined();
-    expect(options.thinkingLevel).toBeUndefined();
+    expect(res.details.agentId).toBe(id);
+    expect(publishedManager().getRecord(id)?.invocation?.modelName).toBe("model b");
   });
 
   it("does not apply a model or thinking level passed with the resume", async () => {
@@ -349,7 +343,7 @@ describe("Agent({ resume }) of an evicted agent keeps its own model and thinking
 
     settleWithSession("RESUMED-RUN", sessionFile, modelB, "high");
     const { agent } = bootWith(branch, modelA, "medium");
-    await agent({ prompt: "Continue.", resume: id, model: "pA/model-a", thinking: "low", run_in_background: false });
+    await agent({ prompt: "Continue.", resume: id, model: "pA/model-a", thinking: "low" });
 
     const options = vi.mocked(runAgent).mock.lastCall![3] as any;
     expect(options.model).toBeUndefined();
@@ -367,7 +361,7 @@ describe("Agent({ resume }) of an evicted agent keeps its own model and thinking
 
     settleWithSession("RESUMED-RUN", sessionFile, modelB, "high");
     const { agent } = bootWith(branch, modelA, "medium");
-    await agent({ prompt: "Continue.", resume: id, run_in_background: false });
+    await agent({ prompt: "Continue.", resume: id });
 
     const options = vi.mocked(runAgent).mock.lastCall![3] as any;
     expect(vi.mocked(runAgent).mock.lastCall![1]).toBe("pinned");
@@ -388,7 +382,7 @@ describe("worktreeLost", () => {
   });
 
   it("is saved in the record entry only when set", () => {
-    const base = { id: "a", type: "Explore", description: "d", status: "completed", startedAt: 0 } as AgentRecord;
+    const base = { id: "a", type: "Surveyor", description: "d", status: "completed", startedAt: 0 } as AgentRecord;
     expect(agentRecordEntryData(base)).not.toHaveProperty("worktreeLost", expect.anything());
     expect(agentRecordEntryData({ ...base, worktree: wt, worktreeResult: { hasChanges: true } }).worktreeLost).toBe(true);
   });
@@ -398,122 +392,12 @@ describe("reclaiming an id", () => {
   it("refuses an id that is still live, rather than replacing its record", async () => {
     settleWith("FIRST-RUN", sessionFile);
     const manager = new AgentManager();
-    const { id } = await manager.spawnAndWait({} as any, ctx(), "general-purpose", "go", { description: "first" });
+    const id = manager.spawn({} as any, ctx(), "worker", "go", { description: "first" });
 
     expect(() =>
-      manager.spawn({} as any, ctx(), "general-purpose", "again", { description: "second", reclaim: { id }, resumeSessionFile: sessionFile }),
+      manager.spawn({} as any, ctx(), "worker", "again", { description: "second", reclaim: { id }, resumeSessionFile: sessionFile }),
     ).toThrow(id);
     expect(manager.getRecord(id)?.description).toBe("first");
-    manager.dispose();
-  });
-});
-
-describe("a workflow's resume once the manager evicted the child", () => {
-  /** A stub manager whose resume finds nothing live, as after eviction. */
-  function evictingManager(file: string | undefined, firstRun: Partial<AgentRecord> = {}) {
-    const settled = (overrides: Partial<AgentRecord> = {}) =>
-      ({
-        id: "child-7",
-        type: "general-purpose",
-        description: "worker",
-        status: "completed",
-        result: "done",
-        toolUses: 0,
-        startedAt: 0,
-        lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
-        compactionCount: 0,
-        sessionFile: file,
-        ...overrides,
-      }) as AgentRecord;
-    /** Only the reopened record is live: the first run's was evicted. */
-    let live: AgentRecord | undefined;
-    /** What the reopened child does mid-run, before it settles. */
-    let duringReopen: ((record: AgentRecord, options: any) => void) | undefined;
-    const spawnAndWait = vi.fn(async (_pi: any, _ctx: any, _type: string, _prompt: string, options: any, onSpawned?: (id: string) => void) => {
-      const record = settled(options.reclaim ? { result: "fixed" } : firstRun);
-      if (options.reclaim) live = record;
-      onSpawned?.(record.id);
-      if (options.reclaim) duringReopen?.(record, options);
-      return { id: record.id, record };
-    });
-    const resume = vi.fn(async () => undefined);
-    const getRecord = (id: string) => (live?.id === id ? live : undefined);
-    return {
-      manager: { spawnAndWait, resume, getRecord, abort: vi.fn() } as unknown as AgentManager,
-      spawnAndWait,
-      resume,
-      onReopenRun(fn: (record: AgentRecord, options: any) => void) { duringReopen = fn; },
-    };
-  }
-
-  const request = { agentId: "wf-agent-0", index: 0, prompt: "build it", label: "worker", agentType: "general-purpose" };
-
-  it("reopens the child's saved session under the same id, still owned by the run", async () => {
-    const stub = evictingManager(sessionFile);
-    const host = createWorkflowHost({ pi: {} as any, ctx: ctx(), manager: stub.manager, workflowId: "wf-1" });
-
-    await host.spawnAgent(request);
-    const resumed = await host.resumeAgent?.("wf-agent-0", "fix the review findings");
-
-    const [, , type, prompt, options] = stub.spawnAndWait.mock.calls[1];
-    expect(type).toBe("general-purpose");
-    expect(prompt).toBe("fix the review findings");
-    expect(options).toMatchObject({ resumeSessionFile: sessionFile, reclaim: { id: "child-7" }, workflowId: "wf-1" });
-    expect(resumed).toMatchObject({ ok: true, text: "fixed" });
-  });
-
-  it("reports the reopened child's counters while it runs (#298)", async () => {
-    // The reopen goes through spawnAndWait, not manager.resume, so it needs the
-    // live forwarding wired on its own. The reclaimed record starts from zero:
-    // its lifetime totals are this continuation's, with no baseline to subtract.
-    const stub = evictingManager(sessionFile, { toolUses: 9, lifetimeUsage: { input: 900, output: 90, cacheWrite: 0 } });
-    const snapshots: unknown[] = [];
-    stub.onReopenRun((record, options) => {
-      record.toolUses = 1;
-      options.onToolActivity?.({ type: "end", toolName: "read" });
-      record.lifetimeUsage = { input: 30, output: 12, cacheWrite: 0 };
-      options.onAssistantUsage?.({ input: 30, output: 12, cacheWrite: 0 });
-    });
-    const host = createWorkflowHost({ pi: {} as any, ctx: ctx(), manager: stub.manager });
-
-    await host.spawnAgent(request);
-    await host.resumeAgent?.("wf-agent-0", "fix it", undefined, info => snapshots.push(info));
-
-    expect(snapshots.at(-1)).toEqual({ tokens: 42, outputTokens: 12, toolCalls: 1 });
-  });
-
-  const wt ={ path: "/wt/c", branch: "pi-agent-c", baseSha: "abc", workPath: "/wt/c" };
-
-  it("refuses, starting nothing, when the child's worktree held its work", async () => {
-    const stub = evictingManager(sessionFile, { worktree: wt, worktreeResult: { hasChanges: true, branch: "pi-agent-c" } });
-    const host = createWorkflowHost({ pi: {} as any, ctx: ctx(), manager: stub.manager, workflowId: "wf-1" });
-
-    await host.spawnAgent(request);
-    const resumed = await host.resumeAgent?.("wf-agent-0", "fix it");
-
-    expect(resumed).toEqual({ ok: false, error: "Agent child-7 cannot be resumed — its worktree no longer exists." });
-    expect(stub.spawnAndWait).toHaveBeenCalledTimes(1);
-  });
-
-  it("reopens a child whose worktree was removed clean", async () => {
-    const stub = evictingManager(sessionFile, { worktree: wt, worktreeResult: { hasChanges: false } });
-    const host = createWorkflowHost({ pi: {} as any, ctx: ctx(), manager: stub.manager, workflowId: "wf-1" });
-
-    await host.spawnAgent(request);
-    const resumed = await host.resumeAgent?.("wf-agent-0", "fix it");
-
-    expect(resumed).toMatchObject({ ok: true, text: "fixed" });
-  });
-
-  it("refuses, starting nothing, when the child's session file is gone", async () => {
-    const stub = evictingManager(sessionFile);
-    const host = createWorkflowHost({ pi: {} as any, ctx: ctx(), manager: stub.manager });
-
-    await host.spawnAgent(request);
-    rmSync(sessionFile);
-    const resumed = await host.resumeAgent?.("wf-agent-0", "fix it");
-
-    expect(resumed).toEqual({ ok: false, error: "Agent child-7 cannot be resumed — its session is gone." });
-    expect(stub.spawnAndWait).toHaveBeenCalledTimes(1);
+    await manager.dispose();
   });
 });

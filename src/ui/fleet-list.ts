@@ -1,9 +1,9 @@
 /**
  * fleet-list.ts — Claude Code-style "FleetView" list rendered below the editor.
  *
- * Shows `main` + each running/queued subagent as a navigable list, nested
- * subagents indented under their parent (`├`/`└`). Pressing ↓ (or ←) at an empty
- * prompt activates the list; ↑/↓ move the `❯` cursor, Enter opens the selected
+ * Shows `main` followed by a flat, navigable list of running/queued subagents.
+ * Pressing ↓ (or ←) at an empty prompt activates the list;
+ * ↑/↓ move the `❯` cursor, Enter opens the selected
  * agent's live conversation overlay, Esc returns to the prompt. `●` marks the view
  * in front (`main`, or the open overlay's agent). In pi's fullscreen mode the mouse
  * works too: hover moves the cursor, a click opens the row.
@@ -19,9 +19,8 @@ import { hasAgentBadge, renderAgentName } from "../agent-color.js";
 import type { AgentManager } from "../agent-manager.js";
 import type { AgentRecord, ViewerMarkdownMode } from "../types.js";
 import { getLifetimeCost, getLifetimeTotal } from "../usage.js";
-import { agentTree } from "./agent-tree.js";
 import { type AgentActivity, buildInvocationTags, formatCost, type Theme } from "./agent-widget.js";
-import { ConversationViewer, getConversationOverlayOptions, type ViewerBackgroundAction } from "./conversation-viewer.js";
+import { ConversationViewer, getConversationOverlayOptions } from "./conversation-viewer.js";
 
 /** Widget key for the below-editor fleet list. */
 const FLEET_KEY = "fleet";
@@ -53,38 +52,14 @@ export type FleetUICtx = {
   ): Promise<T>;
 };
 
-/**
- * A workflow run, as the fleet list needs to see it.
- *
- * Narrow on purpose: the list knows nothing about `WorkflowTask`, the runtime
- * or the dialog, so it stays as testable as it was when it only held agents.
- * The extension maps its tasks into this shape and injects an opener.
- */
-export interface FleetWorkflow {
-  id: string;
-  /** The `meta.name` of the run, or its id when the script named nothing. */
-  name: string;
-  status: "running" | "completed" | "failed" | "killed" | "paused";
-  doneCount: number;
-  totalCount: number;
-  /** `Reviewing (2/3)` — the run's active phases, or "" for none. */
-  phase: string;
-  startedAt: number;
-  /** Set once the run settles, which is what freezes its clock. */
-  completedAt?: number;
-  tokens: number;
-}
-
 type MainEntry = { kind: "main" };
-/** `prefix` is the tree glyphs before the dot: `""` at top level, `├ `/`└ ` (plus `│ ` continuations) below. */
-type AgentEntry = { kind: "agent"; record: AgentRecord; prefix: string };
-type WorkflowEntry = { kind: "workflow"; workflow: FleetWorkflow };
-type FleetEntry = MainEntry | WorkflowEntry | AgentEntry;
+type AgentEntry = { kind: "agent"; record: AgentRecord };
+type FleetEntry = MainEntry | AgentEntry;
 
 /** A roster row's identity across rebuilds. */
 function entryKey(entry: FleetEntry | undefined): string | undefined {
   if (!entry) return undefined;
-  return entry.kind === "main" ? "main" : entry.kind === "agent" ? `agent:${entry.record.id}` : `workflow:${entry.workflow.id}`;
+  return entry.kind === "main" ? "main" : `agent:${entry.record.id}`;
 }
 
 /** `11s` — integer seconds, no decimal/suffix (matches Claude Code, unlike formatMs). */
@@ -99,18 +74,6 @@ export function formatFleetTokens(count: number): string {
   else if (count >= 1_000) compact = `${(count / 1_000).toFixed(1)}k`;
   else compact = `${count}`;
   return `↓ ${compact} tokens`;
-}
-
-/** Cells in a workflow row's progress bar — Claude Code's width. */
-export const PROGRESS_BAR_CELLS = 20;
-
-/**
- * `▰▰▰▱▱…` — a run's done share as filled cells, returned as two runs so the
- * caller can colour them. A run with no agents yet is all empty.
- */
-export function formatProgressBar(done: number, total: number, cells = PROGRESS_BAR_CELLS): { filled: string; empty: string } {
-  const n = total > 0 ? Math.min(cells, Math.max(0, Math.round((cells * done) / total))) : 0;
-  return { filled: "▰".repeat(n), empty: "▱".repeat(cells - n) };
 }
 
 /**
@@ -129,7 +92,6 @@ function rightAlign(left: string, right: string, width: number): string {
 export class FleetList {
   private ui: FleetUICtx | undefined;
   private tui: any | undefined;
-  private onTuiMode?: (mode: string) => void;
   private inputUnsub: (() => void) | undefined;
   private widgetRegistered = false;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -153,17 +115,6 @@ export class FleetList {
   /** Set while a conversation overlay is open; calling it closes the overlay. */
   private viewerClose: (() => void) | undefined;
   private viewingAgentId: string | undefined;
-  /** Injected by the extension; absent until workflows are wired (or at all). */
-  private workflowSource: (() => readonly FleetWorkflow[]) | undefined;
-  private openWorkflow: ((id: string) => Promise<void> | void) | undefined;
-  /**
-   * Set while the workflow inspector is up.
-   *
-   * It does the two jobs `viewerClose` does for an agent's overlay — keep the
-   * list out of the dialog's keys, and remember which row to come back to —
-   * minus the close handle, because that overlay belongs to the extension.
-   */
-  private viewingWorkflowId: string | undefined;
 
   constructor(
     private manager: AgentManager,
@@ -188,12 +139,6 @@ export class FleetList {
     private onViewerMarkdown?: (mode: ViewerMarkdownMode) => void,
     private scrollbarMode: () => ScrollViewScrollbar = () => "auto",
     /**
-     * The viewer's `b` for this row's run, supplied by the extension: only it
-     * knows which runs have a tool call waiting to be released, and it owns the
-     * widget this list shares with. Omitted → no `b` affordance.
-     */
-    private backgroundAction?: (record: AgentRecord, notify: (message: string) => void) => ViewerBackgroundAction,
-    /**
      * Read live at render time, like `showCost`. Whether each row names the
      * model driving the run and the thinking level it is running at. Defaults to
      * off — the extension supplies the user's `showModel` setting — because the
@@ -210,15 +155,6 @@ export class FleetList {
     this.enabled = enabled;
     if (!enabled) this.active = false;
     this.update();
-  }
-
-  /**
-   * Told pi's renderer mode (`"fullscreen"` | `"regular"`) each time the list is
-   * drawn into a TUI. pi hands over a new TUI on a mode switch, so this is how
-   * the extension learns of one.
-   */
-  setTuiModeObserver(observer: (mode: string) => void): void {
-    this.onTuiMode = observer;
   }
 
   /** Capture the UI context and (re)register the global input handler. */
@@ -250,9 +186,6 @@ export class FleetList {
     this.inputUnsub = undefined;
     if (this.viewerClose) { this.viewerClose(); this.viewerClose = undefined; }
     this.viewingAgentId = undefined;
-    // No handle to close the workflow inspector with, but the list is going
-    // away — leaving the id set would keep it swallowing input forever.
-    this.viewingWorkflowId = undefined;
     if (this.ui && this.widgetRegistered) this.ui.setWidget(FLEET_KEY, undefined);
     this.widgetRegistered = false;
     this.tui = undefined;
@@ -264,10 +197,6 @@ export class FleetList {
   /** Re-register/refresh the below-editor widget; clears it when nothing remains. */
   update(): void {
     if (!this.ui) return;
-    // A run with no agents of its own left in the list is still worth a row —
-    // it is the thing the user opens to see what its children did. Read off the
-    // roster for the same reason activation does: two counts of "is there
-    // anything here" drifted apart once before.
     const hasRows = this.enabled && this.roster().length > 1;
 
     if (!hasRows) {
@@ -289,7 +218,6 @@ export class FleetList {
     if (!this.widgetRegistered) {
       this.ui.setWidget(FLEET_KEY, (tui, theme) => {
         this.tui = tui;
-        if (typeof tui?.mode === "string") this.onTuiMode?.(tui.mode);
         return {
           render: (w: number) => this.renderBar(w, theme),
           invalidate: () => { this.widgetRegistered = false; this.tui = undefined; },
@@ -305,86 +233,33 @@ export class FleetList {
   // ---- Roster ----
 
   /**
-   * Agents shown in the list, as a tree: each top-level agent, then its nested
-   * children depth-first under it, siblings earliest-launched first so the ones
-   * started sooner sit at the top. Every row is openable (has a session), so Enter
-   * never dead-ends. Included: running/queued, plus the agent currently being
-   * viewed, plus recently-finished ones (they linger briefly before dropping out).
+   * Flat list of openable agents, oldest first. Includes running/queued,
+   * recently finished, and the agent currently being viewed.
    * Pending agents with no session yet are hidden until they start.
-   * (`listAgents()` is newest-first, so we re-sort.)
-   *
-   * Nested children get rows of their own here (`agentTree`), as in Claude
-   * Code's FleetView, so each row shows its own usage rather than a rolled-up total.
-   * A child shows only under a visible parent. A workflow's agents stay out —
-   * the run's own row and inspector cover them.
    */
   private agentEntries(): AgentEntry[] {
     const now = Date.now();
-    const all = this.manager.listAgents();
-    // The viewed agent stays listed, and a nested one needs its ancestors to
-    // hang from: they settle together (a parent stops its children), so the
-    // parent would otherwise drop out first and take the viewed row with it.
-    const pinned = new Set<string>();
-    for (let id = this.viewingAgentId; id !== undefined && !pinned.has(id); ) {
-      pinned.add(id);
-      id = all.find(a => a.id === id)?.parentAgentId;
-    }
-    const visible = all
-      .filter(a => a.workflowId === undefined && a.session && (
+    return this.manager.listAgents()
+      .filter(a => a.session && (
         a.status === "running" || a.status === "queued"
-        || pinned.has(a.id)
+        || a.id === this.viewingAgentId
         || (a.completedAt != null && now - a.completedAt < FINISHED_LINGER_MS)
       ))
-      .sort((a, b) => a.startedAt - b.startedAt);
-    return agentTree(visible).map(({ record, prefix }) => ({ kind: "agent", record, prefix }));
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .map(record => ({ kind: "agent", record }));
   }
 
-  /**
-   * Wire workflow runs into the list.
-   *
-   * Injected rather than constructed here because the fleet list predates
-   * workflows and must keep working without them — a session with the feature
-   * switched off never calls this, and the roster is agents-only exactly as
-   * before.
-   */
-  setWorkflowSource(
-    source: () => readonly FleetWorkflow[],
-    open: (id: string) => Promise<void> | void,
-  ): void {
-    this.workflowSource = source;
-    this.openWorkflow = open;
-  }
-
-  /** Live runs, plus recently settled ones — the same linger the agents get. */
-  private workflows(): FleetWorkflow[] {
-    if (!this.workflowSource) return [];
-    const now = Date.now();
-    return [...this.workflowSource()]
-      .filter(run =>
-        run.status === "running"
-        || run.status === "paused"
-        || (run.completedAt != null && now - run.completedAt < FINISHED_LINGER_MS)
-      )
-      .sort((a, b) => a.startedAt - b.startedAt);
-  }
-
-  /**
-   * Runs sit above the agents rather than interleaved by start time: a run owns
-   * most of the agents under it, so listing the container first is what makes
-   * the list read as a hierarchy rather than a shuffle.
-   */
   private roster(): FleetEntry[] {
     return [
       { kind: "main" },
-      ...this.workflows().map(workflow => ({ kind: "workflow" as const, workflow })),
       ...this.agentEntries(),
     ];
   }
 
   /**
    * Re-resolve the selection against the current roster. The cursor follows its
-   * row, not its slot: a nested spawn inserts a child mid-list, and a slot-based
-   * cursor would then sit on — and Enter open — a different agent. Following
+   * row, not its slot: as agents appear or drop out, a slot-based cursor would
+   * sit on — and Enter open — a different agent. Following
    * applies only while the index is where the last resolve left it; a key or a
    * click since then is a deliberate move and wins. A row that is gone leaves
    * the cursor at its position, clamped, so the next row takes the slot.
@@ -415,7 +290,7 @@ export class FleetList {
     // While an overlay is open, let it own all input. Checked before the focus
     // test below, which would otherwise read the dialog holding the keyboard as
     // "the user left the list" and reset the selection out from under it.
-    if (this.viewerClose || this.viewingWorkflowId) return undefined;
+    if (this.viewerClose) return undefined;
     // A key means the user went back to the keyboard. While navigating, it acts
     // on the row the `❯` is on, so take the hover over as the selection; either
     // way drop it, or it would sit wherever the pointer last crossed the list.
@@ -433,9 +308,6 @@ export class FleetList {
     if (!this.active) {
       // Activate: ↓ or ← at an empty prompt moves focus into the list.
       const isActivator = matchesKey(data, "down") || matchesKey(data, "left");
-      // Gated on the roster, not the agents: a session whose only row is a
-      // workflow run still has somewhere to go, and requiring an agent would
-      // render the row but refuse to move into it.
       if (isActivator && this.roster().length > 1 && this.ui.getEditorText() === "") {
         this.active = true;
         this.selectedIndex = 0;
@@ -476,7 +348,7 @@ export class FleetList {
    */
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     if (!this.enabled || !this.ui) return undefined;
-    if (this.viewerClose || this.viewingWorkflowId) return undefined;
+    if (this.viewerClose) return undefined;
     if (!this.editorHasFocus()) return undefined;
     const index = this.lineRoster[event.y];
     if (event.type === "move") {
@@ -528,17 +400,6 @@ export class FleetList {
       this.deactivate();
       return;
     }
-    if (entry.kind === "workflow") {
-      // The extension owns this overlay and closes it, so there is no
-      // `viewerClose` to hold — but the list still has to know one is up, and
-      // still has to put the cursor back on the run when it comes down.
-      this.viewingWorkflowId = entry.workflow.id;
-      void Promise.resolve(this.openWorkflow?.(entry.workflow.id)).then(
-        () => this.clearViewer(),
-        () => this.clearViewer(),
-      );
-      return;
-    }
     const record = entry.record;
     if (!this.ui) return;
     if (!record.session) {
@@ -570,7 +431,6 @@ export class FleetList {
           this.viewerMarkdown,
           this.onViewerMarkdown,
           this.scrollbarMode(),
-          this.backgroundAction?.(record, message => this.ui?.notify(message, "info")),
         );
       },
       {
@@ -586,25 +446,20 @@ export class FleetList {
     // still feels natural if the list reordered (an earlier agent finished)
     // while the overlay was open. If that agent is gone, leave the index for
     // update()'s clamp to settle.
-    const viewed = this.viewingAgentId ?? this.viewingWorkflowId;
+    const viewed = this.viewingAgentId;
     if (viewed !== undefined) {
-      const idx = this.roster().findIndex(e =>
-        e.kind === "agent" ? e.record.id === viewed
-        : e.kind === "workflow" ? e.workflow.id === viewed
-        : false,
-      );
+      const idx = this.roster().findIndex(e => e.kind === "agent" && e.record.id === viewed);
       if (idx >= 0) this.selectedIndex = idx;
     }
     this.viewerClose = undefined;
     this.viewingAgentId = undefined;
-    this.viewingWorkflowId = undefined;
     this.update();
   }
 
   // ---- Rendering ----
 
   private renderBar(width: number, theme: Theme): string[] {
-    const rows = this.roster().slice(1) as (WorkflowEntry | AgentEntry)[];
+    const rows = this.agentEntries();
     if (rows.length === 0) { this.lineRoster = []; return []; }
     // Clamp locally so a render between a roster shrink and the next update()
     // (e.g. on terminal resize) never loses the selection marker.
@@ -623,7 +478,7 @@ export class FleetList {
     };
     push(truncateToWidth("  " + theme.fg("dim", hint), width));
     push("");
-    const mainInFront = this.viewingAgentId === undefined && this.viewingWorkflowId === undefined;
+    const mainInFront = this.viewingAgentId === undefined;
     push(truncateToWidth(`${this.gutter(0, cursor, theme)}${this.dot(mainInFront, theme)} main`, width), 0);
 
     // Window the rows so the selected one stays visible.
@@ -634,13 +489,7 @@ export class FleetList {
 
     if (start > 0) push(rightAlign("", theme.fg("dim", `↑ ${start} more`), width));
     for (let a = start; a < start + visible; a++) {
-      const row = rows[a];
-      push(
-        row.kind === "workflow" ?
-          this.renderWorkflowRow(a + 1, cursor, row.workflow, width, theme)
-        : this.renderAgentRow(a + 1, cursor, row, width, theme),
-        a + 1,
-      );
+      push(this.renderAgentRow(a + 1, cursor, rows[a], width, theme), a + 1);
     }
     if (hiddenBelow > 0) push(rightAlign("", theme.fg("dim", `↓ ${hiddenBelow} more`), width));
     // pi stacks below-editor widgets directly on its footer with no spacer (#351).
@@ -663,36 +512,6 @@ export class FleetList {
     return inFront ? theme.fg("accent", "●") : theme.fg("dim", "○");
   }
 
-  /**
-   * A run's row: gutter, dot, a `workflow` label where an agent has its type,
-   * the name, then a progress bar, `done/total agents` and the active phases
-   * where an agent has its description, and the same elapsed/token tail flush right. Claude Code
-   * has no label and runs its stats inline after the bar; the label says what
-   * the row is, and the flush-right tail lines up with the agent rows.
-   * `rightAlign` cuts the left side first, so a narrow terminal loses the
-   * count and bar before the elapsed/token tail.
-   */
-  private renderWorkflowRow(
-    rosterIndex: number,
-    cursor: number | undefined,
-    workflow: FleetWorkflow,
-    width: number,
-    theme: Theme,
-  ): string {
-    const selected = rosterIndex === cursor;
-    const name = selected ? theme.fg("text", workflow.name) : workflow.name;
-    const dot = this.dot(workflow.id === this.viewingWorkflowId, theme);
-    const { filled, empty } = formatProgressBar(workflow.doneCount, workflow.totalCount);
-    const bar = theme.fg(workflow.status === "completed" ? "success" : "accent", filled) + theme.fg("dim", empty);
-    const muted = (text: string) => theme.fg(selected ? "text" : "dim", text);
-    const kind = theme.fg(selected ? "text" : "muted", "workflow");
-    const count = muted(`${workflow.doneCount}/${workflow.totalCount} agents${workflow.phase ? ` · ${workflow.phase}` : ""}`);
-    const left = `${this.gutter(rosterIndex, cursor, theme)}${dot} ${kind}  ${name}  ${bar} ${count}`;
-    // Frozen once the run settles, exactly as an agent's clock is.
-    const elapsed = (workflow.completedAt ?? Date.now()) - workflow.startedAt;
-    return rightAlign(left, muted(`${formatFleetElapsed(elapsed)} · ${formatFleetTokens(workflow.tokens)}`), width);
-  }
-
   private renderAgentRow(
     rosterIndex: number,
     cursor: number | undefined,
@@ -700,7 +519,7 @@ export class FleetList {
     width: number,
     theme: Theme,
   ): string {
-    const { record, prefix } = entry;
+    const { record } = entry;
     // The selected row renders in the theme's primary text color so it reads as
     // one selection (#230). A configured badge survives — Claude Code's FleetView
     // keeps the agent color on the selected row too and only bolds it — which also
@@ -710,9 +529,8 @@ export class FleetList {
       ? { fallbackColor: "text", bold: hasAgentBadge(record.type) }
       : { fallbackColor: "muted" });
     const description = selected ? theme.fg("text", record.description) : record.description;
-    const tree = prefix ? theme.fg("dim", prefix) : "";
     const dot = this.dot(record.id === this.viewingAgentId, theme);
-    let left = `${this.gutter(rosterIndex, cursor, theme)}${tree}${dot} ${name}  ${description}`;
+    let left = `${this.gutter(rosterIndex, cursor, theme)}${dot} ${name}  ${description}`;
     if (this.showModel()) {
       // After the description, not in the stats: rightAlign truncates only the
       // left side, so here the model is cut first and the name survives. Bare
@@ -722,8 +540,6 @@ export class FleetList {
       if (model) left += theme.fg(selected ? "text" : "dim", ` · ${model}`);
     }
     // The record, not the activity tracker: only the record outlives the agent.
-    // Its OWN usage, not `lifetimeUsage` — that one folds in every descendant,
-    // and the descendants have rows of their own here.
     const tokens = getLifetimeTotal(record.ownUsage);
     const elapsedMs = (record.completedAt ?? Date.now()) - record.startedAt; // freezes once finished
     const cost = this.showCost() ? formatCost(getLifetimeCost(record.ownUsage)) : "";

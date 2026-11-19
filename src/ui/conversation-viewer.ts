@@ -82,12 +82,6 @@ export function getConversationOverlayOptions(tui: Pick<TUI, "mode">): OverlayOp
  */
 export const RESULT_MAX_CHARS = 16_000;
 
-/** The `b` affordance: whether this run can be handed to the background now, and the handoff. */
-export interface ViewerBackgroundAction {
-  available(): boolean;
-  send(): void;
-}
-
 /** Cycle order for the viewer's `m` key. */
 const MARKDOWN_MODES: readonly ViewerMarkdownMode[] = ["off", "assistant", "all"];
 
@@ -263,12 +257,6 @@ export class ConversationViewer implements Component, Focusable {
     private onMarkdownMode?: (mode: ViewerMarkdownMode) => void,
     /** Pi's fullscreen scrollbar preference, captured when the observer opens. */
     scrollbarMode: ScrollViewScrollbar = "auto",
-    /**
-     * Hand this run to the background. `available` is read live — it turns
-     * false the instant the handoff lands or the run ends. Omitted → no `b`
-     * affordance (history views).
-     */
-    private onBackground?: ViewerBackgroundAction,
   ) {
     this.fullscreen = tui.mode === "fullscreen";
     this.markdownTheme = resolveMarkdownTheme(theme);
@@ -312,16 +300,6 @@ export class ConversationViewer implements Component, Focusable {
     if (matchesKey(data, "enter") && this.canSteer()) {
       this.stopArmed = false;
       this.openComposer();
-      return;
-    }
-
-    // Hand a live foreground run to the background. Single press, unlike stop:
-    // the transition is one-way but keeps the agent working, so a stray key
-    // costs a notification rather than the run.
-    if (matchesKey(data, "b") && this.canSendToBackground()) {
-      this.stopArmed = false;
-      this.onBackground?.send();
-      this.tui.requestRender();
       return;
     }
 
@@ -515,8 +493,7 @@ export class ConversationViewer implements Component, Focusable {
     const toolUses = this.activity?.toolUses ?? this.record.toolUses;
     if (toolUses > 0) headerParts.unshift(`${toolUses} tool${toolUses === 1 ? "" : "s"}`);
     // Spend from the record, context from the live session: the record is the
-    // only total that survives the agent finishing and the only one carrying a
-    // nested child's spend.
+    // total survives the agent finishing.
     const tokens = getLifetimeTotal(this.record.lifetimeUsage);
     if (tokens > 0) {
       const percent = getSessionContextPercent(this.activity?.session);
@@ -595,7 +572,6 @@ export class ConversationViewer implements Component, Focusable {
       const sep = th.fg("dim", " · ");
       if (this.canSteer()) footerActions.push({ label: "Enter steer", key: "\r" });
       // Abbreviated for the same reason as the Markdown group below.
-      if (this.canSendToBackground()) footerActions.push({ label: "b bg", key: "b" });
       if (this.isStoppable()) {
         footerActions.push({ label: this.stopArmed ? "x again to STOP" : "x stop", key: "x" });
       }
@@ -702,15 +678,6 @@ export class ConversationViewer implements Component, Focusable {
   /** Steerable only when a steer handler exists and the agent is still active. */
   private canSteer(): boolean {
     return !!this.onSteer && (this.record.status === "running" || this.record.status === "queued");
-  }
-
-  /**
-   * Asked of the owner rather than derived from the record: only the caller
-   * blocked on this run knows it can let go of it, and `blocking` alone also
-   * matches spawns nobody can hand off (the agent generator).
-   */
-  private canSendToBackground(): boolean {
-    return this.onBackground?.available() === true;
   }
 
   /** Open the inline steering composer and route subsequent input to it. */

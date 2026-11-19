@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { publishedManager, writeTestAgent } from "./helpers/boot-extension.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -20,6 +21,7 @@ vi.mock("../src/agent-runner.js", async () => {
 import { resumeAgent, runAgent } from "../src/agent-runner.js";
 import { registerAgents } from "../src/agent-types.js";
 import subagentsExtension from "../src/index.js";
+import { buildInvocationTags, getPromptModeLabel } from "../src/ui/agent-widget.js";
 
 function agentTool() {
   const tools = new Map<string, any>();
@@ -60,7 +62,7 @@ function ctx() {
 
 /** What a child session reports about itself once pi has resolved it. */
 function session(provider: string, id: string, thinkingLevel: string, name?: string) {
-  return { model: { provider, id, name: name ?? MODEL_NAMES[id] }, thinkingLevel, dispose: vi.fn() } as never;
+  return { model: { provider, id, name: name ?? MODEL_NAMES[id] }, thinkingLevel, messages: [], subscribe: () => () => {}, dispose: vi.fn() } as never;
 }
 
 const MODELS = [
@@ -70,15 +72,10 @@ const MODELS = [
 
 const MODEL_NAMES: Record<string, string> = Object.fromEntries(MODELS.map(m => [m.id, m.name]));
 
-const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t } as any;
-
-function render(tool: any, result: any, expanded = false): string {
-  return tool.renderResult(
-    { content: result.content, details: result.details },
-    { expanded, isPartial: false },
-    theme,
-    { isError: false },
-  ).render(200).join("\n");
+/** The live views format the invocation from the accepted record, not from launch text. */
+function display(result: any) {
+  const record = publishedManager().getRecord(result.details.agentId)!;
+  return buildInvocationTags(record.invocation);
 }
 
 /**
@@ -100,6 +97,7 @@ let originalHome: string | undefined;
 beforeEach(() => {
   originalCwd = process.cwd();
   cwd = mkdtempSync(join(tmpdir(), "agent-model-display-"));
+  writeTestAgent(cwd, "worker");
   process.chdir(cwd);
   // A developer's own ~/.pi agents and settings would otherwise leak in.
   originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -120,7 +118,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("Agent tool result — effective model", () => {
+describe("Live agent record — effective model", () => {
   it("names the model even when the child inherited the parent's", async () => {
     // The old rule was "show it only when it differs from the parent", which
     // left `thinking: high` attached to nothing on the common path.
@@ -133,47 +131,37 @@ describe("Agent tool result — effective model", () => {
 
     const result = await tool.execute(
       "tc-1",
-      { prompt: "go", description: "d", subagent_type: "general-purpose", run_in_background: false },
+      { prompt: "go", description: "d", subagent_type: "worker" },
       undefined,
       vi.fn(),
       ctx(),
     );
 
-    expect(result.details.modelName).toBe("opus 4.6");
-    expect(render(tool, result)).toContain("opus 4.6");
-    expect(render(tool, result, true)).toContain("opus 4.6");
+    expect(display(result).modelName).toBe("opus 4.6");
+
   });
 
-  it("names the inherited model while streaming, before a session exists", async () => {
-    // The streaming row renders from the pre-session snapshot, which the old
-    // "only when it differs from the parent" rule left empty for every agent
-    // that inherited — the level had nothing to attach itself to.
-    vi.mocked(runAgent).mockImplementation(async (_c: any, _t: any, _p: any, options: any) => {
-      options.onToolActivity?.({ type: "start", toolName: "Read" });
-      const s = session("anthropic", "claude-opus-4-6", "high");
-      options.onSessionCreated?.(s);
-      return { responseText: "done", session: s, aborted: false, steered: false } as never;
-    });
+  it("names the inherited model at acceptance, before a session exists", async () => {
+    const finish = Promise.withResolvers<any>();
+    vi.mocked(runAgent).mockReturnValue(finish.promise);
     const tool = agentTool();
     const onUpdate = vi.fn();
-
-    await tool.execute(
-      "tc-1b",
-      { prompt: "go", description: "d", subagent_type: "general-purpose", run_in_background: false },
-      undefined,
-      onUpdate,
-      ctx(),
-    );
-
-    const streamed = onUpdate.mock.calls[0][0];
-    expect(streamed.details.modelName).toBe("opus 4.6");
-    expect(tool.renderResult(streamed, { expanded: false, isPartial: true }, theme, { isError: false })
-      .render(200).join("\n")).toContain("opus 4.6");
+    const receipt = await tool.execute("tc-1b", { prompt: "go", description: "d", subagent_type: "worker" }, undefined, onUpdate, ctx());
+    try {
+      const record = publishedManager().getRecord(receipt.details.agentId)!;
+      expect(record.session).toBeUndefined();
+      expect(display(receipt).modelName).toBe("opus 4.6");
+      expect(onUpdate).not.toHaveBeenCalled();
+    } finally {
+      finish.resolve({ responseText: "done", session: session("anthropic", "claude-opus-4-6", "high"), aborted: false, steered: false });
+      await publishedManager().waitForAll();
+    }
   });
 
   it("keeps the twin label beside the model", async () => {
     // The mode label hangs off the agent type, not the invocation, so anything
     // that rebuilds tags from the invocation alone silently drops it.
+    writeFileSync(join(cwd, ".pi", "agents", "worker.md"), "---\ndescription: Twin fixture\ntools: read\nprompt_mode: append\n---\nTest.\n");
     vi.mocked(runAgent).mockImplementation(async (_c: any, _t: any, _p: any, options: any) => {
       const s = session("anthropic", "claude-opus-4-6", "high");
       options.onSessionCreated?.(s);
@@ -183,14 +171,15 @@ describe("Agent tool result — effective model", () => {
 
     const result = await tool.execute(
       "tc-2",
-      { prompt: "go", description: "d", subagent_type: "general-purpose", run_in_background: false },
+      { prompt: "go", description: "d", subagent_type: "worker" },
       undefined,
       vi.fn(),
       ctx(),
     );
 
-    expect(result.details.tags).toContain("twin");
-    expect(render(tool, result)).toContain("twin");
+    const record = publishedManager().getRecord(result.details.agentId)!;
+    expect(getPromptModeLabel(record.type)).toBe("twin");
+    expect(display(result).modelName).toBe("opus 4.6");
   });
 
   it("reports the session's level, and what was asked for, when pi clamps it", async () => {
@@ -203,16 +192,16 @@ describe("Agent tool result — effective model", () => {
 
     const result = await tool.execute(
       "tc-3",
-      { prompt: "go", description: "d", subagent_type: "general-purpose", thinking: "max", run_in_background: false },
+      { prompt: "go", description: "d", subagent_type: "worker", thinking: "max" },
       undefined,
       vi.fn(),
       ctx(),
     );
 
-    expect(result.details.tags).toContain("thinking: high (asked max)");
+    expect(display(result).tags).toContain("thinking: high (asked max)");
   });
 
-  // Asserted on the immediate background result, which renders BEFORE a session
+  // Asserted on the initial invocation, which is available BEFORE a session
   // exists. That is the only place the two causes of a mismatch are separable:
   // a clamp cannot have happened yet, so "(asked max)" here can only come from
   // the agent file outranking the parameter.
@@ -223,13 +212,13 @@ describe("Agent tool result — effective model", () => {
 
     const result = await tool.execute(
       "tc-4",
-      { prompt: "go", description: "d", subagent_type: "pinned", thinking: "max", run_in_background: true },
+      { prompt: "go", description: "d", subagent_type: "pinned", thinking: "max" },
       undefined,
       undefined,
       ctx(),
     );
 
-    expect(result.details.tags).toContain("thinking: low (asked max)");
+    expect(display(result).tags).toContain("thinking: low (asked max)");
   });
 
   it("discloses a model an agent file pinned over the caller's (#182)", async () => {
@@ -244,14 +233,13 @@ describe("Agent tool result — effective model", () => {
         description: "d",
         subagent_type: "pinned",
         model: "anthropic/claude-opus-4-6",
-        run_in_background: true,
       },
       undefined,
       undefined,
       ctx(),
     );
 
-    expect(result.details.modelName).toBe("haiku 4.5 (asked anthropic/claude-opus-4-6)");
+    expect(display(result).modelName).toBe("haiku 4.5 (asked anthropic/claude-opus-4-6)");
   });
 
   it("stays quiet when the caller's spelling names the model that won", async () => {
@@ -264,13 +252,13 @@ describe("Agent tool result — effective model", () => {
 
     const result = await tool.execute(
       "tc-5b",
-      { prompt: "go", description: "d", subagent_type: "pinned", model: "haiku", run_in_background: true },
+      { prompt: "go", description: "d", subagent_type: "pinned", model: "haiku" },
       undefined,
       undefined,
       ctx(),
     );
 
-    expect(result.details.modelName).toBe("haiku 4.5");
+    expect(display(result).modelName).toBe("haiku 4.5");
   });
 
   it("discloses a spelling that names no available model at all", async () => {
@@ -280,13 +268,13 @@ describe("Agent tool result — effective model", () => {
 
     const result = await tool.execute(
       "tc-5c",
-      { prompt: "go", description: "d", subagent_type: "pinned", model: "gpt-9", run_in_background: true },
+      { prompt: "go", description: "d", subagent_type: "pinned", model: "gpt-9" },
       undefined,
       undefined,
       ctx(),
     );
 
-    expect(result.details.modelName).toBe("haiku 4.5 (asked gpt-9)");
+    expect(display(result).modelName).toBe("haiku 4.5 (asked gpt-9)");
   });
 
   it("says nothing about a request that was honored", async () => {
@@ -299,18 +287,18 @@ describe("Agent tool result — effective model", () => {
 
     const result = await tool.execute(
       "tc-6",
-      { prompt: "go", description: "d", subagent_type: "general-purpose", thinking: "high", run_in_background: false },
+      { prompt: "go", description: "d", subagent_type: "worker", thinking: "high" },
       undefined,
       vi.fn(),
       ctx(),
     );
 
-    expect(result.details.tags).toContain("thinking: high");
-    expect(render(tool, result)).not.toContain("asked");
+    expect(display(result).tags).toContain("thinking: high");
+    expect(display(result).tags.join(" ")).not.toContain("asked");
   });
 });
 
-describe("Agent tool result — resume", () => {
+describe("Live agent record — resume", () => {
   it("renders the reopened session's settings, not the resume call's", async () => {
     // resumeAgent only prompts the existing session: model and thinking on a
     // resume call cannot take effect, so rendering them advertises a
@@ -326,19 +314,19 @@ describe("Agent tool result — resume", () => {
 
     const first = await tool.execute(
       "tc-7",
-      { prompt: "go", description: "original", subagent_type: "general-purpose", run_in_background: false },
+      { prompt: "go", description: "original", subagent_type: "worker" },
       undefined,
       vi.fn(),
       context,
     );
 
+    await publishedManager().waitForAll();
     const resumed = await tool.execute(
       "tc-8",
       {
         prompt: "continue",
         description: "changed",
-        subagent_type: "general-purpose",
-        run_in_background: false,
+        subagent_type: "worker",
         model: "anthropic/claude-opus-4-6",
         thinking: "max",
         resume: first.details.agentId,
@@ -348,8 +336,8 @@ describe("Agent tool result — resume", () => {
       context,
     );
 
-    expect(resumed.details.modelName).toBe("haiku 4.5");
-    expect(resumed.details.tags).toContain("thinking: low");
-    expect(render(tool, resumed)).not.toContain("opus 4.6");
+    expect(display(resumed).modelName).toBe("haiku 4.5");
+    expect(display(resumed).tags).toContain("thinking: low");
+    expect(resumed.details.agentId).toBe(first.details.agentId);
   });
 });

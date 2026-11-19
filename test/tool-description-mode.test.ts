@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { setDefaultsDisabled, setToolDescriptionMode } from "../src/agent-types.js";
+import { setToolDescriptionMode } from "../src/agent-types.js";
 import subagentsExtension from "../src/index.js";
 import { setWorktreeIsolationEnabled } from "../src/worktree.js";
 
@@ -65,6 +65,9 @@ describe("toolDescriptionMode", () => {
     if (settings) {
       writeFileSync(join(tmpDir, ".pi", "subagents.json"), JSON.stringify(settings));
     }
+    mkdirSync(join(tmpDir, ".pi", "agents"), { recursive: true });
+    writeFileSync(join(tmpDir, ".pi", "agents", "cataloger.md"),
+      "---\ndescription: Catalogs files. Produces an index.\ntools: read, find\n---\nCatalog files.\n");
     beforeInstantiate?.();
     process.chdir(tmpDir);
 
@@ -84,7 +87,6 @@ describe("toolDescriptionMode", () => {
     // previous test left it. Reset it so each setup()'s settings decide, and
     // so the "default" assertions below really test the default.
     setWorktreeIsolationEnabled(true);
-    setDefaultsDisabled(false);
     setToolDescriptionMode("full");
     process.chdir(prevCwd);
     if (prevAgentDir == null) delete process.env.PI_CODING_AGENT_DIR;
@@ -100,8 +102,7 @@ describe("toolDescriptionMode", () => {
     const desc: string = tools.get("Agent").description;
     expect(desc).toContain("## Usage notes");
     expect(desc).toContain("## Writing the prompt");
-    // Full agent descriptions are embedded (a late Explore sentence survives).
-    expect(desc).toContain("very thorough");
+    expect(desc).toContain("Catalogs files. Produces an index.");
   });
 
   it("compact mode swaps in the short description with one-line type list", () => {
@@ -111,9 +112,8 @@ describe("toolDescriptionMode", () => {
     expect(desc).not.toContain("## Usage notes");
     expect(desc).not.toContain("## Writing the prompt");
     // Type list keeps every agent but only the first sentence of each description.
-    expect(desc).toContain("- general-purpose:");
-    expect(desc).toContain("- Explore: Fast read-only search agent for locating code. (Tools:");
-    expect(desc).not.toContain("very thorough");
+    expect(desc).toContain("- cataloger: Catalogs files. (Tools: read, find)");
+    expect(desc).not.toContain("Produces an index.");
     // The point of the feature: materially smaller than the full version.
     expect(desc.length).toBeLessThan(1600);
   });
@@ -130,7 +130,7 @@ describe("toolDescriptionMode", () => {
     // One keyword per behavioral contract the orchestrator must know about.
     // If you change one of these behaviors, update BOTH descriptions.
     for (const contract of [
-      "run_in_background",
+      "in the background",
       "resume",
       "steer_subagent",
       'isolation: "worktree"',
@@ -153,7 +153,7 @@ describe("toolDescriptionMode", () => {
     const tool = setup().get("Agent");
     const visible = `${tool.description}\n${JSON.stringify(tool.parameters)}`;
     for (const contract of [
-      "run_in_background",
+      "in the background",
       "resume",
       "steer_subagent",
       "worktree",
@@ -169,7 +169,7 @@ describe("toolDescriptionMode", () => {
 
   it("every strategy param carries a real description of its own", () => {
     const props = setup().get("Agent").parameters?.properties ?? {};
-    for (const name of ["run_in_background", "model", "thinking", "inherit_context"]) {
+    for (const name of ["resume", "model", "thinking", "inherit_context"]) {
       // Long enough to be an explanation the model can act on, not a bare label.
       expect(props[name]?.description?.length ?? 0).toBeGreaterThan(40);
     }
@@ -184,7 +184,7 @@ describe("toolDescriptionMode", () => {
     });
     const desc: string = tools.get("Agent").description;
     expect(desc).toContain("My agents:");
-    expect(desc).toContain("- general-purpose:"); // {{typeList}} expanded
+    expect(desc).toContain("- cataloger:"); // {{typeList}} expanded
     expect(desc).toContain(`Global dir: ${hermeticAgentDir}`); // {{agentDir}} expanded
     expect(desc).toContain("Unknown: {{nope}}"); // unknown placeholder left verbatim
     expect(desc).toContain("Cost: $& stays literal"); // no $-pattern expansion
@@ -197,7 +197,7 @@ describe("toolDescriptionMode", () => {
     });
     const desc: string = tools.get("Agent").description;
     expect(desc).toContain("GLOBAL CUSTOM");
-    expect(desc).toContain("- Explore: Fast read-only search agent for locating code. (Tools:");
+    expect(desc).toContain("- cataloger: Catalogs files. (Tools: read, find)");
   });
 
   it("{{scheduleGuideline}} expands to the schedule bullet when scheduling is on (default)", () => {
@@ -284,33 +284,10 @@ describe("toolDescriptionMode", () => {
   // TEXT expansion was tested — nothing asserted the schema itself, so the
   // parameter could keep costing tokens (and stay callable) while the prose
   // claimed otherwise.
-  // #330: the exploration guideline named Explore even when it could not be
-  // spawned. Claude Code adds its version of the line only when Explore is
-  // available (`suggestsExploreAgent`), so the example follows availability.
-  describe("the exploration guideline names Explore only when it can be spawned", () => {
-    const exploreLine = (tools: Map<string, any>) =>
-      (tools.get("Agent").promptGuidelines as string[]).find((g) => g.startsWith("For broad codebase exploration"));
-
-    it("suggests Explore by default", () => {
-      expect(exploreLine(setup())).toContain("Explore");
-    });
-
-    it("drops the example when the built-in agents are disabled", () => {
-      const line = exploreLine(setup({ disableDefaultAgents: true }));
-      expect(line).toBeDefined();
-      expect(line).not.toContain("Explore");
-    });
-
-    it("drops the example when an agent file disables Explore", () => {
-      const line = exploreLine(
-        setup(undefined, () => {
-          mkdirSync(join(tmpDir, ".pi", "agents"), { recursive: true });
-          writeFileSync(join(tmpDir, ".pi", "agents", "Explore.md"), "---\ndescription: off\nenabled: false\n---\nbody");
-        }),
-      );
-      expect(line).toBeDefined();
-      expect(line).not.toContain("Explore");
-    });
+  it("advertises no role when the registry is empty", () => {
+    const tools = setup(undefined, () => rmSync(join(tmpDir, ".pi", "agents"), { recursive: true }));
+    expect(tools.get("Agent").description).toContain("(none)");
+    expect(tools.get("Agent").parameters.properties.subagent_type.description).toContain("Available types: (none)");
   });
 
   describe("schedulingEnabled gates the schedule parameter", () => {
@@ -441,52 +418,6 @@ describe("toolDescriptionMode", () => {
       const tools = withAgent("narrow", "tools: read, grep");
       const desc: string = tools.get("Agent").description;
       expect(desc).toContain("- narrow: narrow agent. (Tools: read, grep)");
-    });
-  });
-
-  describe("workflowToolExposure picks where the SubagentWorkflow reference lives", () => {
-    it("skill points at the skill instead of carrying the reference", () => {
-      const desc: string = setup({ workflowToolExposure: "skill" }).get("SubagentWorkflow").description;
-      expect(desc).toContain("load the `workflow-authoring` skill (read `");
-      expect(desc).not.toContain("Script body hooks:");
-    });
-
-    it("defaults to inline: the reference in place of the pointer, roster still rendered", () => {
-      // A model can skip the pointer — one did in a manual run — so by default
-      // the reference is in the description it cannot avoid reading.
-      const desc: string = setup().get("SubagentWorkflow").description;
-      expect(desc).not.toContain("Before writing a script, load the `workflow-authoring` skill");
-      expect(desc).toContain("# Workflow authoring reference");
-      expect(desc).toContain("Script body hooks:");
-      expect(desc).toContain("## Resume");
-      // The skill's frontmatter is for pi's loader, not the model.
-      expect(desc).not.toContain("name: workflow-authoring");
-      expect(desc).not.toContain("{{typeList}}");
-      expect(desc).toContain("- general-purpose:");
-    });
-
-    it("deferred carries the inline reference: a pointer would cost a second round trip after the search", () => {
-      const desc: string = setup({ workflowToolExposure: "deferred" }).get("SubagentWorkflow").description;
-      expect(desc).toContain("Script body hooks:");
-      expect(desc).not.toContain("Before writing a script, load the `workflow-authoring` skill");
-    });
-
-    it("inline and deferred tell the model not to load the listed skill they already carry", () => {
-      // pi lists the skill in the system prompt too; without this line a model
-      // read SKILL.md on top of the identical inline body.
-      const lead = "Do not load the `workflow-authoring` skill: its full text follows.";
-      const inline: string = setup().get("SubagentWorkflow").description;
-      const deferred: string = setup({ workflowToolExposure: "deferred" }).get("SubagentWorkflow").description;
-      const skill: string = setup({ workflowToolExposure: "skill" }).get("SubagentWorkflow").description;
-      expect(inline).toContain(`${lead}\n\n# Workflow authoring reference`);
-      expect(deferred).toContain(lead);
-      expect(skill).not.toContain(lead);
-    });
-
-    it("an invalid value is dropped — the inline default", () => {
-      const desc: string = setup({ workflowToolExposure: "both" }).get("SubagentWorkflow").description;
-      expect(desc).toContain("Script body hooks:");
-      expect(desc).not.toContain("Before writing a script, load the `workflow-authoring` skill");
     });
   });
 });

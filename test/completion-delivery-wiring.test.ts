@@ -25,7 +25,7 @@ vi.mock("../src/worktree.js", async () => {
 import { resumeAgent, runAgent } from "../src/agent-runner.js";
 import subagentsExtension from "../src/index.js";
 import { createWorktree } from "../src/worktree.js";
-import { type BootedPi, ctx, type Hermetic, hermeticDir, makePi } from "./helpers/boot-extension.js";
+import { type BootedPi, ctx, type Hermetic, hermeticDir, makePi, testAgentFile } from "./helpers/boot-extension.js";
 
 const MANAGER_KEY = Symbol.for("pi-subagents:manager");
 
@@ -46,7 +46,7 @@ afterEach(async () => {
 
 /** Boot the extension with a parent whose run state the test controls. */
 async function boot(settings: Record<string, unknown> = {}) {
-  hermetic = hermeticDir({ settings: { outputTranscript: false, schedulingEnabled: false, ...settings } });
+  hermetic = hermeticDir({ agentFiles: { worker: testAgentFile("worker") }, settings: { outputTranscript: false, schedulingEnabled: false, ...settings } });
   booted = makePi();
   subagentsExtension(booted.pi);
   const parent = { running: true };
@@ -76,7 +76,7 @@ function controllableRuns() {
 const spawn = (b: BootedPi, parentCtx: any, prompt: string, extra: Record<string, unknown> = {}) =>
   b.tools.get("Agent").execute(
     `call-${prompt}`,
-    { prompt, description: prompt, subagent_type: "general-purpose", run_in_background: true, ...extra },
+    { prompt, description: prompt, subagent_type: "worker", ...extra },
     undefined, undefined, parentCtx,
   );
 
@@ -190,10 +190,10 @@ describe("completion delivery to a running parent", () => {
 });
 
 describe("a completion pending while its agent is resumed", () => {
-  const resume = (b: BootedPi, parentCtx: any, id: string, prompt: string, background: boolean) =>
+  const resume = (b: BootedPi, parentCtx: any, id: string, prompt: string) =>
     b.tools.get("Agent").execute(
       `call-${prompt}`,
-      { prompt, description: prompt, subagent_type: "general-purpose", resume: id, run_in_background: background },
+      { prompt, description: prompt, subagent_type: "worker", resume: id },
       undefined, undefined, parentCtx,
     );
 
@@ -205,7 +205,7 @@ describe("a completion pending while its agent is resumed", () => {
     runs.settle("alpha");
     await vi.advanceTimersByTimeAsync(0);
 
-    await resume(b, b.parentCtx, id, "again", true);
+    await resume(b, b.parentCtx, id, "again");
     turnEnd(b);
     expect(sentContents(b)).toEqual([expect.stringContaining("alpha done")]);
 
@@ -213,25 +213,6 @@ describe("a completion pending while its agent is resumed", () => {
     await vi.advanceTimersByTimeAsync(0);
     turnEnd(b);
     expect(sentContents(b)).toEqual([expect.stringContaining("alpha done"), expect.stringContaining("again done")]);
-  });
-
-  it("still reports the first run, not the inline result, when a foreground resume runs before the boundary", async () => {
-    vi.useFakeTimers();
-    const runs = controllableRuns();
-    const b = await boot();
-    const id = agentIdOf(await spawn(b, b.parentCtx, "alpha"));
-    runs.settle("alpha");
-    await vi.advanceTimersByTimeAsync(0);
-
-    const inline = resume(b, b.parentCtx, id, "again", false);
-    await vi.advanceTimersByTimeAsync(0);
-    runs.settle("again");
-    await inline;
-    turnEnd(b);
-
-    const sent = sentContents(b);
-    expect(sent).toEqual([expect.stringContaining("alpha done")]);
-    expect(sent[0]).not.toContain("again done");
   });
 
   it("does not report a run whose result was read before a background resume", async () => {
@@ -243,7 +224,7 @@ describe("a completion pending while its agent is resumed", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     await b.tools.get("get_subagent_result").execute("read", { agent_id: id }, undefined, undefined, b.parentCtx);
-    await resume(b, b.parentCtx, id, "again", true);
+    await resume(b, b.parentCtx, id, "again");
     turnEnd(b);
 
     expect(b.pi.sendMessage).not.toHaveBeenCalled();
@@ -360,25 +341,27 @@ describe("`group` join mode — one notification per turn's batch", () => {
     expect(sentContents(b)).toEqual([expect.stringContaining("mentioned done")]);
   });
 
-  it("does not hold a sibling for a spawn whose worktree failed late", async () => {
+  it("groups a late worktree failure with its sibling and reports each once", async () => {
     vi.useFakeTimers();
     const runs = controllableRuns();
     const b = await boot({ defaultJoinMode: "group" });
     worktreeAfter(500, false);
 
-    const calls = Promise.allSettled([
+    const calls = Promise.all([
       spawn(b, b.parentCtx, "doomed", { isolation: "worktree" }),
       spawn(b, b.parentCtx, "sibling"),
     ]);
-    await vi.advanceTimersByTimeAsync(500);
     const [doomed] = await calls;
-    expect(doomed.status).toBe("rejected");
+    expect(doomed.details.status).toBe("running");
     turnEnd(b);
+    await vi.advanceTimersByTimeAsync(500);
 
     runs.settle("sibling");
     await vi.advanceTimersByTimeAsync(1_000);
     turnEnd(b);
 
     expect(sentContents(b)).toEqual([expect.stringContaining("sibling done")]);
+    expect(sentContents(b)[0]).toContain(doomed.details.agentId);
+    expect(sentContents(b)[0]).toContain("Cannot run with isolation");
   });
 });

@@ -1,10 +1,5 @@
 /**
- * model-scope.ts — `scopeModels` policy, shared by the top-level Agent tool and
- * the nested delegation tools so a nested spawn can't escape the allowlist the
- * top-level path enforces.
- *
- * State lives here (rather than in an index.ts closure) for the same reason
- * `disableDefaults` lives in agent-types.ts: both entry points need it.
+ * model-scope.ts — `scopeModels` policy, shared by the Agent tool and RPC.
  */
 
 import { isModelInScope, type ModelRegistryRef, readEnabledModels, resolveEnabledModels } from "./enabled-models.js";

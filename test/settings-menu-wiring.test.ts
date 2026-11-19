@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { testAgentFile } from "./helpers/boot-extension.js";
 
 // The real page component renders through pi's theme, which a test process
 // never initializes. Plain-text styling is enough to read the header.
@@ -88,8 +89,7 @@ const toRow = (n: number) => Array<string>(n + 1).fill(DOWN);
 
 /** Row order of the number settings on the page. */
 const ROW: Record<string, number> = {
-  maxConcurrent: 0, maxConcurrentForeground: 1, maxConcurrentNested: 2,
-  maxSubagentDepth: 3, defaultMaxTurns: 4, graceTurns: 5,
+  maxConcurrent: 0, defaultMaxTurns: 1, graceTurns: 2,
 };
 
 /** Keystrokes that open the editor on the selected row, type `value`, and submit it. */
@@ -155,6 +155,9 @@ describe("/agents → Settings writes only the changed setting", () => {
     originalCwd = process.cwd();
     cwd = mkdtempSync(join(tmpdir(), "settings-menu-wiring-"));
     agentDir = join(cwd, "agent-dir");
+    // The .pi directory must stay absent for assertions about persistence.
+    mkdirSync(join(cwd, ".agents", "agents"), { recursive: true });
+    writeFileSync(join(cwd, ".agents", "agents", "surveyor.md"), testAgentFile("surveyor"));
     process.chdir(cwd);
     // Keep a developer's real ~/.pi/agent/subagents.json out of the test.
     originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -335,8 +338,8 @@ describe("/agents → Settings writes only the changed setting", () => {
     const lines = before.page.screen.split("\n");
     const tagAt = (label: string, tag: string) => lines.find(line => line.includes(label))!.indexOf(tag);
     expect(tagAt("Grace turns", "global")).toBe(tagAt("Max background concurrency", "project"));
-    expect(before.page.screen).toMatch(/Nested depth +2\b/);
-    expect(before.page.screen).not.toMatch(/Nested depth +(project|global)/);
+    expect(before.page.screen).toMatch(/Default max turns +0\b/);
+    expect(before.page.screen).not.toMatch(/Default max turns +(project|global)/);
 
     // Project is the default scope here: the save puts graceTurns in the project file.
     const after = typeSetting("graceTurns", "9");
@@ -400,7 +403,7 @@ describe("/agents → Settings writes only the changed setting", () => {
     writeJson(globalFile(), { maxConcurrent: 4 });
     const agents = boot();
     // Del on Max background concurrency, then cycle Join mode.
-    const { ctx } = drivePage([...FOCUS_LIST, DEL, ...Array<string>(6).fill(DOWN), ENTER]);
+    const { ctx } = drivePage([...FOCUS_LIST, DEL, ...Array<string>(3).fill(DOWN), ENTER]);
 
     await agents(ctx);
 
@@ -411,7 +414,7 @@ describe("/agents → Settings writes only the changed setting", () => {
     // Package agents is on by default because no gate is set at all.
     writeJson(globalFile(), { packageAgents: false });
     const agents = boot();
-    const { ctx, page } = drivePage([...toRow(19), DEL]);
+    const { ctx, page } = drivePage([..."package agents", DOWN, DEL]);
 
     await agents(ctx);
 
@@ -455,8 +458,8 @@ describe("/agents → Settings writes only the changed setting", () => {
     await agents(tabbed.ctx);
     expect(tabbed.page.header).toContain(".pi/subagents.json · created on first change");
 
-    // Tab → Project, then Enter on Join mode (7th row), which cycles its value.
-    const { ctx, page } = drivePage([TAB, ...toRow(6), ENTER]);
+    // Tab → Project, then Enter on Join mode (5th row), which cycles its value.
+    const { ctx, page } = drivePage([TAB, ...toRow(3), ENTER]);
     await agents(ctx);
 
     expect(Object.keys(readJson(projectFile()) as object)).toEqual(["defaultJoinMode"]);
@@ -501,7 +504,7 @@ describe("/agents → Settings writes only the changed setting", () => {
 
     expect(page.screen).toMatch(/Max background concurrency +project +3\b/);
     expect(page.screen).toMatch(/Grace turns +global +7\b/);
-    expect(page.screen).toMatch(/Nested depth +2\b/);
+    expect(page.screen).toMatch(/Default max turns +0\b/);
   });
 
   it("after a restart, a project file made via Tab is the default scope and its value loads", async () => {
@@ -523,6 +526,8 @@ describe("/agents → Settings filter and height", () => {
     originalCwd = process.cwd();
     cwd = mkdtempSync(join(tmpdir(), "settings-menu-filter-"));
     agentDir = join(cwd, "agent-dir");
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(join(agentDir, "agents", "surveyor.md"), testAgentFile("surveyor"));
     process.chdir(cwd);
     originalAgentDir = process.env.PI_CODING_AGENT_DIR;
     originalHome = process.env.HOME;
@@ -584,14 +589,14 @@ describe("/agents → Settings filter and height", () => {
   });
 
   it("typing after moving onto a row hands focus back to the filter", async () => {
-    writeJson(globalFile(), { maxConcurrentForeground: 3 });
+    writeJson(globalFile(), { defaultMaxTurns: 3 });
     const agents = boot();
-    // Onto Max foreground concurrency, type, then Backspace: it removes the typed "c".
+    // Onto Default max turns, type, then Backspace: it removes the typed "c".
     const { ctx, notify, page } = drivePage([...toRow(1), "c", BACKSPACE]);
 
     await agents(ctx);
 
-    expect(readJson(globalFile())).toEqual({ maxConcurrentForeground: 3 });
+    expect(readJson(globalFile())).toEqual({ defaultMaxTurns: 3 });
     expect(notify).not.toHaveBeenCalled();
     expect(page.screen).toContain("Tool description");
   });
@@ -646,24 +651,6 @@ describe("/agents → Settings filter and height", () => {
     expect(twice.page.closedItself).toBe(true);
   });
 
-  it("Enter on the Workflow tool exposure row saves skill", async () => {
-    const agents = boot();
-    const { ctx } = drivePage([..."workflow tool exp", DOWN, ENTER]);
-
-    await agents(ctx);
-
-    expect(readJson(globalFile())).toEqual({ workflowToolExposure: "skill" });
-  });
-
-  it("Enter twice on the Workflow tool exposure row saves deferred", async () => {
-    const agents = boot();
-    const { ctx } = drivePage([..."workflow tool exp", DOWN, ENTER, ENTER]);
-
-    await agents(ctx);
-
-    expect(readJson(globalFile())).toEqual({ workflowToolExposure: "deferred" });
-  });
-
   it("Enter on the Prompt cache retention row saves short and applies it to the next spawn", async () => {
     const agents = boot();
     const { ctx, notify } = drivePage([..."prompt cache", DOWN, ENTER]);
@@ -694,6 +681,6 @@ describe("/agents → Settings filter and height", () => {
     expect(page.lines.length).toBeLessThanOrEqual(24);
     expect(page.lines[0]).toContain("Subagent Settings");
     expect(page.screen).toMatch(/^> Report usage to session +off\b/m);
-    expect(page.screen).toContain("(29/29)");
+    expect(page.screen).toContain("(21/21)");
   });
 });

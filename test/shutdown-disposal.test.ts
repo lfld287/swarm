@@ -10,8 +10,7 @@
  * state; repeated reloads accumulate them.
  *
  * These tests exercise the real wiring — the real extension activation and the
- * real session_shutdown handler — under a hermetic agent dir so the built-in
- * `general-purpose` type resolves everywhere.
+ * real session_shutdown handler — with isolated project and global agent dirs.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,9 +66,8 @@ describe("session_shutdown disposes activation-owned resources (#256)", () => {
   let prevHome: string | undefined;
 
   beforeEach(() => {
-    // Hermetic cwd + global dir, scheduling off, so session_start doesn't spin a
-    // scheduler or touch the dev's filesystem — same isolation as #108's wiring
-    // tests, and it makes the built-in general-purpose type resolve.
+    // Hermetic cwd + global agent dir, with scheduling disabled, so the fixture
+    // doesn't load the developer's custom roles or start a scheduler.
     tmpDir = mkdtempSync(join(tmpdir(), "pi-256-"));
     agentDir = mkdtempSync(join(tmpdir(), "pi-256-agentdir-"));
     prevAgentDir = process.env.PI_CODING_AGENT_DIR;

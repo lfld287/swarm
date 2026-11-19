@@ -112,7 +112,6 @@ max_turns: 30
 persist_session: true
 output_transcript: false
 session_dir: .seams/pi-sessions/seam-plan-reviewer
-allowed_subagents: scout, reviewer
 prompt_mode: replace
 inherit_context: true
 run_in_background: true
@@ -134,10 +133,9 @@ You are a security auditor.`);
     expect(agent.persistSession).toBe(true);
     expect(agent.outputTranscript).toBe(false);
     expect(agent.sessionDir).toBe(".seams/pi-sessions/seam-plan-reviewer");
-    expect(agent.allowedSubagents).toEqual(["scout", "reviewer"]);
     expect(agent.promptMode).toBe("replace");
     expect(agent.inheritContext).toBe(true);
-    expect(agent.runInBackground).toBe(true);
+    expect(agent).not.toHaveProperty("runInBackground");
     expect(agent.isolated).toBe(true);
     expect(agent.systemPrompt).toBe("You are a security auditor.");
   });
@@ -180,10 +178,8 @@ Just a prompt.`);
     expect(agent.persistSession).toBeUndefined();
     expect(agent.outputTranscript).toBeUndefined();
     expect(agent.sessionDir).toBeUndefined();
-    expect(agent.allowedSubagents).toBeUndefined();
     expect(agent.promptMode).toBe("replace");
     expect(agent.inheritContext).toBeUndefined();
-    expect(agent.runInBackground).toBeUndefined();
     expect(agent.isolated).toBeUndefined();
     expect(agent.systemPrompt).toBe("Just a prompt.");
   });
@@ -198,60 +194,6 @@ Just a prompt.`);
     expect(agent.description).toBe("bare");
     expect(agent.builtinToolNames).toEqual(BUILTIN_TOOL_NAMES);
     expect(agent.systemPrompt).toBe("Just a system prompt, no frontmatter.");
-  });
-
-  it("parses allowed_subagents: off by default, `all` wildcard, csv restriction", () => {
-    writeAgent("omitted", `---
----
-Off.`);
-    writeAgent("unrestricted", `---
-allowed_subagents: all
----
-Unrestricted.`);
-    writeAgent("wildcard", `---
-allowed_subagents: "*"
----
-Unrestricted.`);
-    writeAgent("mixed-case", `---
-allowed_subagents: scout, ALL
----
-Unrestricted.`);
-    writeAgent("none", `---
-allowed_subagents: none
----
-Off.`);
-    writeAgent("blank", `---
-allowed_subagents:
----
-Off.`);
-    writeAgent("restricted", `---
-allowed_subagents: scout, reviewer
----
-Restricted.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("omitted")!.allowedSubagents).toBeUndefined();
-    expect(result.get("unrestricted")!.allowedSubagents).toBe("all");
-    expect(result.get("wildcard")!.allowedSubagents).toBe("all");
-    expect(result.get("mixed-case")!.allowedSubagents).toBe("all");
-    expect(result.get("none")!.allowedSubagents).toBeUndefined();
-    expect(result.get("blank")!.allowedSubagents).toBeUndefined();
-    expect(result.get("restricted")!.allowedSubagents).toEqual(["scout", "reviewer"]);
-  });
-
-  it("accepts booleans like extensions:/skills: do, instead of a type named \"true\"", () => {
-    writeAgent("bool-on", `---
-allowed_subagents: true
----
-On.`);
-    writeAgent("bool-off", `---
-allowed_subagents: false
----
-Off.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("bool-on")!.allowedSubagents).toBe("all");
-    expect(result.get("bool-off")!.allowedSubagents).toBeUndefined();
   });
 
   it("handles tools: none → empty array", () => {
@@ -519,7 +461,7 @@ Real.`);
     expect(result.has("real")).toBe(true);
   });
 
-  it("allows agents with names matching defaults (overrides them)", () => {
+  it("loads a custom definition using a former built-in name", () => {
     writeAgent("Explore", `---
 description: Custom Explore
 ---
@@ -1188,11 +1130,9 @@ Prompt.`);
         model: "anthropic/claude-haiku-4-5",
         thinking: "low",
         maxTurns: 7,
-        allowedSubagents: ["Explore"],
         excludeExtensions: ["ext-beta"],
         disallowedTools: ["write"],
         inheritContext: true,
-        runInBackground: true,
         outputTranscript: false,
         isolated: true,
         memory: "project",
@@ -1202,29 +1142,13 @@ Prompt.`);
       expect(loaded.model).toBe("anthropic/claude-haiku-4-5");
       expect(loaded.thinking).toBe("low");
       expect(loaded.maxTurns).toBe(7);
-      expect(loaded.allowedSubagents).toEqual(["Explore"]);
       expect(loaded.excludeExtensions).toEqual(["ext-beta"]);
       expect(loaded.disallowedTools).toEqual(["write"]);
       expect(loaded.inheritContext).toBe(true);
-      expect(loaded.runInBackground).toBe(true);
       expect(loaded.outputTranscript).toBe(false);
       expect(loaded.isolated).toBe(true);
       expect(loaded.memory).toBe("project");
       expect(loaded.isolation).toBe("worktree");
-    });
-
-    // The writer used to emit `run_in_background` only when truthy, so an
-    // explicit `false` was dropped. Harmless while foreground was the default
-    // and omission meant the same thing — but with `backgroundByDefault` on,
-    // dropping it flips the ejected agent to background.
-    it("preserves an explicit run_in_background: false instead of dropping it", () => {
-      expect(roundTrip({ runInBackground: false }).runInBackground).toBe(false);
-    });
-
-    it("leaves run_in_background unset when the config doesn't pin it", () => {
-      // Absent must stay absent — writing a value would freeze the agent
-      // against the setting rather than letting it follow the default.
-      expect(roundTrip({}).runInBackground).toBeUndefined();
     });
 
     it("preserves the extension and skill list fields", () => {
@@ -1246,12 +1170,6 @@ Prompt.`);
       const off = roundTrip({ extensions: false, skills: false });
       expect(off.extensions).toBe(false);
       expect(off.skills).toBe(false);
-    });
-
-    it("preserves allowed_subagents in both its list and `all` forms", () => {
-      expect(roundTrip({ allowedSubagents: "all" }).allowedSubagents).toBe("all");
-      expect(roundTrip({ allowedSubagents: ["Explore", "Plan"] }).allowedSubagents)
-        .toEqual(["Explore", "Plan"]);
     });
 
     // Eject only ever ran on built-in defaults before package agents became

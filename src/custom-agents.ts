@@ -23,9 +23,7 @@ import type { AgentConfig, IsolationMode, MemoryScope, ThinkingLevel } from "./t
  * letters and hyphens", but that is guidance — the only stated load failure is
  * the colon, so `name: Code Reviewer` must work here too. (The stricter
  * letters/digits/underscore/hyphen regex in Claude Code applies to the Agent
- * tool's spawn-time `name` parameter, which is a different field.) Mixed case
- * has to be allowed regardless: the built-in types `Explore` and `Plan` use it,
- * and a file must be able to override one.
+ * tool's spawn-time `name` parameter, which is a different field.)
  */
 const RESERVED_IN_TYPE = ":";
 
@@ -60,7 +58,6 @@ export interface LoadCustomAgentsOptions {
  * Project-level agents override global ones with the same name. On a name clash
  * between the two project locations, .pi/agents wins — .pi stays the project
  * authority; .agents/agents is an additional read location.
- * Any name is allowed — names matching defaults (e.g. "Explore") override them.
  *
  * Package agents load *first*, so everything the user or project wrote outranks
  * them. That is what makes them safe to adopt: a package can offer a `reviewer`,
@@ -87,7 +84,7 @@ export function loadCustomAgents(
   const pkgFiles = opts.packageFiles ?? packageAgentFiles(cwd);
   // `!./agents/wip.md` alongside `./agents` excludes one file out of a directory
   // that is only enumerated here, so the check has to run per file.
-  const excluded: Excluder = opts.packageExcluded ?? (path => isPackageResourceExcluded(path, cwd, "agents"));
+  const excluded: Excluder = opts.packageExcluded ?? (path => isPackageResourceExcluded(path, cwd));
 
   const agents = new Map<string, AgentConfig>();
   for (const dir of pkgDirs) loadFromDir(dir, agents, "package", strict, excluded); // lowest priority
@@ -208,11 +205,9 @@ function loadOneFile(path: string, agents: Map<string, AgentConfig>, source: Age
       : undefined,
     outputTranscript: fm.output_transcript != null ? fm.output_transcript !== false : undefined,
     sessionDir: str(fm.session_dir),
-    allowedSubagents: parseAllowedSubagents(fm.allowed_subagents),
     systemPrompt: body.trim(),
     promptMode: fm.prompt_mode === "append" ? "append" : "replace",
     inheritContext: fm.inherit_context != null ? fm.inherit_context === true : undefined,
-    runInBackground: fm.run_in_background != null ? fm.run_in_background === true : undefined,
     isolated: fm.isolated != null ? fm.isolated === true : undefined,
     memory: parseMemory(fm.memory),
     isolation: parseIsolation(fm.isolation),
@@ -334,22 +329,6 @@ function parseCsvField(val: unknown): string[] | undefined {
 }
 
 /**
- * Parse the nested-delegation allowlist. Single field, default-off:
- * omitted/empty/"none"/`false` → undefined (no nested tools); "all"/"*"/`true`
- * → "all" (any enabled agent); csv → only the listed types.
- *
- * Booleans are accepted because `extensions:`/`skills:` take them and users
- * generalize: without this, YAML's `true` stringifies into an agent type
- * literally named "true", so the tools appear and every spawn is refused.
- */
-function parseAllowedSubagents(val: unknown): "all" | string[] | undefined {
-  if (typeof val === "boolean") return val ? "all" : undefined;
-  const items = parseCsvField(val);
-  if (!items) return undefined;
-  return items.some(i => i === "*" || i.toLowerCase() === "all") ? "all" : items;
-}
-
-/**
  * Parse a comma-separated list field with defaults.
  * omitted → defaults; "none"/empty → []; csv → listed items.
  */
@@ -375,7 +354,7 @@ function normalizeToolName(name: string): string {
  * A deny list as the runner applies it. Each entry denies the tool with exactly
  * that name and the pi built-in it maps to, so an extension
  * tool named `glob` stays denied rather than becoming `find`. Shared by an agent
- * file's `disallowed_tools` and a workflow `agent({ disallowedTools })`.
+ * file's `disallowed_tools` and a spawn's `disallowedTools`.
  */
 export function deniedToolNames(names: string[] | undefined): string[] | undefined {
   return names?.flatMap(n => [...new Set([n, normalizeToolName(n)])]);

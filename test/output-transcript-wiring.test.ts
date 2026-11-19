@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTestAgent } from "./helpers/boot-extension.js";
 
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -9,7 +10,7 @@ vi.mock("../src/agent-runner.js", async () => {
 });
 
 // Only the filesystem side is faked; the transcript default is real module
-// state (both spawn paths read it there), so it must be reset between tests.
+// state, so it must be reset between tests.
 vi.mock("../src/output-file.js", async () => {
   const actual = await vi.importActual<typeof import("../src/output-file.js")>("../src/output-file.js");
   return {
@@ -79,6 +80,7 @@ describe("output_transcript agent wiring", () => {
     mkdirSync(join(cwd, ".pi"), { recursive: true });
     writeFileSync(join(cwd, ".pi", "subagents.json"), JSON.stringify({ schedulingEnabled: false }));
     mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeTestAgent(cwd, "worker");
     process.chdir(cwd);
     vi.mocked(runAgent).mockImplementation(async (_ctx, _type, _prompt, options) => {
       await Promise.resolve();
@@ -119,8 +121,8 @@ describe("output_transcript agent wiring", () => {
     await lifecycle.get("session_shutdown")?.({}, makeCtx(cwd));
   });
 
-  it("also suppresses the background transcript", async () => {
-    writeFileSync(join(agentDir, "agents", "sensitive.md"), `---\ndescription: Sensitive in-memory agent\noutput_transcript: false\nrun_in_background: true\n---\n\nKeep data in memory.`);
+  it("suppresses the background transcript for a role that opts out", async () => {
+    writeFileSync(join(agentDir, "agents", "sensitive.md"), `---\ndescription: Sensitive in-memory agent\noutput_transcript: false\n---\n\nKeep data in memory.`);
     const { pi, tools, lifecycle } = makePi();
     subagentsExtension(pi);
 
@@ -144,7 +146,7 @@ describe("output_transcript agent wiring", () => {
 
     await tools.get("Agent").execute(
       "tool-call",
-      { prompt: "ordinary work", description: "Do ordinary work", subagent_type: "general-purpose" },
+      { prompt: "ordinary work", description: "Do ordinary work", subagent_type: "worker" },
       undefined,
       undefined,
       makeCtx(cwd),
@@ -164,7 +166,7 @@ describe("output_transcript agent wiring", () => {
 
     await tools.get("Agent").execute(
       "tool-call",
-      { prompt: "ordinary work", description: "Do ordinary work", subagent_type: "general-purpose" },
+      { prompt: "ordinary work", description: "Do ordinary work", subagent_type: "worker" },
       undefined,
       undefined,
       makeCtx(cwd),

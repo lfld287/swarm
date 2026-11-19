@@ -1,7 +1,7 @@
 /**
  * agents-menu.ts — the `/agents` command: its root menu and every page below
- * it except Settings (`settings-menu.ts`), Workflows (`workflow-menu.ts`) and
- * Scheduled jobs (`schedule-menu.ts`), which it opens.
+ * it except Settings (`settings-menu.ts`) and Scheduled jobs
+ * (`schedule-menu.ts`), which it opens.
  *
  * Running agents, agent types with their detail page (eject, disable,
  * enable), and the create wizards. The session state these read lives in
@@ -15,34 +15,28 @@ import { Container, type SettingItem, SettingsList, Spacer, Text } from "@earend
 import { buildNewAgentFile, disableInContent, enableInContent, isEmptyStub, locateAgentFile, personalAgentsDir, projectAgentsDir, serializeAgentFile } from "../agent-file-toggle.js";
 import type { AgentManager } from "../agent-manager.js";
 import { rowDescription, sourceIndicator, sourceLegend } from "../agent-source-badge.js";
-import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes } from "../agent-types.js";
+import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getToolNamesForType } from "../agent-types.js";
 import type { ModelRegistry } from "../model-resolver.js";
 import { packageNameForPath } from "../package-resources.js";
 import type { SubagentScheduler } from "../schedule.js";
 import { type AgentConfig, type AgentRecord, THINKING_LEVELS } from "../types.js";
 import { isWorktreeIsolationEnabled } from "../worktree.js";
-import { agentTree } from "./agent-tree.js";
 import { formatDuration, getDisplayName } from "./agent-widget.js";
 import { showSchedulesMenu } from "./schedule-menu.js";
 import { selectItem } from "./select-item.js";
-import { showWorkflowsMenu, type WorkflowMenuDeps } from "./workflow-menu.js";
 
 export interface AgentsMenuDeps {
   pi: ExtensionAPI;
   manager: AgentManager;
   scheduler: SubagentScheduler;
-  /** The Workflows page's deps; its `tasks` also give the menu's run count. */
-  workflowMenuDeps: WorkflowMenuDeps;
-  isWorkflowsEnabled(): boolean;
   reloadCustomAgents(): void;
   getModelLabel(type: string, registry?: ModelRegistry): string;
-  /** The conversation overlay, shared with the Workflows page. */
   viewAgentConversation(ctx: ExtensionCommandContext, record: AgentRecord): Promise<void>;
   showSettings(ctx: ExtensionCommandContext): Promise<void>;
 }
 
 export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: ExtensionCommandContext): Promise<void> } {
-  const { pi, manager, scheduler, workflowMenuDeps, isWorkflowsEnabled, reloadCustomAgents, getModelLabel, viewAgentConversation, showSettings } = deps;
+  const { pi, manager, scheduler, reloadCustomAgents, getModelLabel, viewAgentConversation, showSettings } = deps;
 
   async function showAgentsMenu(ctx: ExtensionCommandContext) {
     reloadCustomAgents();
@@ -50,7 +44,7 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
 
     // Each row pairs its label with the value the menu dispatches on.
     const items: { value: string; label: string }[] = [];
-    const agents = runningAgentsRoster().map(row => row.record);
+    const agents = manager.listAgents();
     if (agents.length > 0) {
       const running = agents.filter(a => a.status === "running" || a.status === "queued").length;
       const done = agents.filter(a => a.status === "completed" || a.status === "steered").length;
@@ -62,11 +56,6 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
     // Shown only while the scheduler is active.
     if (scheduler.isActive()) {
       items.push({ value: "schedules", label: `Scheduled jobs (${scheduler.list().length})` });
-    }
-    // Workflow runs, on the same terms as scheduled jobs: shown only when the
-    // feature is on, so the menu never advertises something switched off.
-    if (isWorkflowsEnabled()) {
-      items.push({ value: "workflows", label: `Workflows (${workflowMenuDeps.tasks.size})` });
     }
     items.push({ value: "create", label: "Create new agent" });
     items.push({ value: "settings", label: "Settings" });
@@ -93,9 +82,6 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
       await showAgentsMenu(ctx);
     } else if (choice === "schedules") {
       await showSchedulesMenu(ctx, scheduler);
-      await showAgentsMenu(ctx);
-    } else if (choice === "workflows") {
-      await showWorkflowsMenu(ctx, workflowMenuDeps);
       await showAgentsMenu(ctx);
     } else if (choice === "create") {
       await showCreateWizard(ctx);
@@ -172,19 +158,9 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
     }
   }
 
-  /**
-   * The session's agents plus their nested children, as a tree (newest
-   * top-level first). Nested children are listed here as in FleetView: this
-   * list keeps finished agents until eviction, so it is where a finished child
-   * stays reachable. Workflow agents stay in the workflow inspector.
-   */
-  function runningAgentsRoster() {
-    return agentTree(manager.listAgents().filter(a => a.workflowId === undefined));
-  }
-
   async function showRunningAgents(ctx: ExtensionCommandContext) {
-    const rows = runningAgentsRoster();
-    if (rows.length === 0) {
+    const agents = manager.listAgents();
+    if (agents.length === 0) {
       ctx.ui.notify("No agents.", "info");
       return;
     }
@@ -192,13 +168,12 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
     // Numbered + item-paired. Two same-type agents spawned together with the
     // same description render identically here, and resolving the choice by
     // string match would open whichever came first.
-    const row = await selectItem(ctx.ui, "Running agents", rows, ({ record: a, prefix }) => {
+    const record = await selectItem(ctx.ui, "Running agents", agents, (a) => {
       const dn = getDisplayName(a.type);
       const dur = formatDuration(a.startedAt, a.completedAt);
-      return `${prefix}${dn} (${a.description}) · ${a.toolUses} tools · ${a.status} · ${dur}`;
+      return `${dn} (${a.description}) · ${a.toolUses} tools · ${a.status} · ${dur}`;
     });
-    if (!row) return;
-    const record = row.record;
+    if (!record) return;
 
     await viewAgentConversation(ctx, record);
     // Back-navigation: re-show the list
@@ -214,7 +189,6 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
 
     const isPackage = cfg.source === "package";
     const file = locateAgentFile(name, cfg.sourcePath, undefined, cfg.source);
-    const isDefault = cfg.isDefault === true;
     const disabled = cfg.enabled === false;
 
     let menuOptions: string[];
@@ -229,18 +203,8 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
         ? ["Eject (export as .md)", "Back"]
         : ["Eject (export as .md)", "Disable", "Back"];
     } else if (disabled && file) {
-      // Disabled agent with a file — offer Enable
-      menuOptions = isDefault
-        ? ["Enable", "Edit", "Reset to default", "Delete", "Back"]
-        : ["Enable", "Edit", "Delete", "Back"];
-    } else if (isDefault && !file) {
-      // Default agent with no .md override
-      menuOptions = ["Eject (export as .md)", "Disable", "Back"];
-    } else if (isDefault && file) {
-      // Default agent with .md override (ejected)
-      menuOptions = ["Edit", "Disable", "Reset to default", "Delete", "Back"];
+      menuOptions = ["Enable", "Edit", "Delete", "Back"];
     } else {
-      // User-defined agent
       menuOptions = ["Edit", "Disable", "Delete", "Back"];
     }
 
@@ -268,13 +232,6 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
           ctx.ui.notify(`Deleted ${file.path}`, "info");
         }
       }
-    } else if (choice === "Reset to default" && file) {
-      const confirmed = await ctx.ui.confirm("Reset to default", `Delete override ${file.path} and restore embedded default?`);
-      if (confirmed) {
-        unlinkSync(file.path);
-        reloadCustomAgents();
-        ctx.ui.notify(`Restored default ${name}`, "info");
-      }
     } else if (choice.startsWith("Eject")) {
       await ejectAgent(ctx, name, cfg);
     } else if (choice === "Disable") {
@@ -284,7 +241,7 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
     }
   }
 
-  /** Eject a default agent: write its embedded config as a .md file. */
+  /** Eject a package agent: copy its config to an editable .md file. */
   async function ejectAgent(ctx: ExtensionCommandContext, name: string, cfg: AgentConfig) {
     const location = await ctx.ui.select("Choose location", [
       "Project (.pi/agents/)",
@@ -308,7 +265,7 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
     ctx.ui.notify(`Ejected ${name} to ${targetPath}`, "info");
   }
 
-  /** Disable an agent: set enabled: false in its .md file, or create a stub for built-in defaults. */
+  /** Disable an agent in its .md file or write a local stub to shadow a package role. */
   async function disableAgent(ctx: ExtensionCommandContext, name: string) {
     const cfg = getAgentConfig(name);
     // `locateAgentFile` refuses a package agent's own path, so this is either the
@@ -336,8 +293,12 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
       return;
     }
 
-    // No editable file (a built-in default, or a package-provided agent) —
-    // create a stub that shadows it.
+    if (cfg?.source !== "package") {
+      ctx.ui.notify(`No editable agent file found for "${name}".`, "warning");
+      return;
+    }
+
+    // A package role has no editable file; create a local stub to shadow it.
     const location = await ctx.ui.select("Choose location", [
       "Project (.pi/agents/)",
       `Personal (${personalAgentsDir()})`,
@@ -368,7 +329,7 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
       return;
     }
 
-    // If the file was just a stub ("---\n---\n"), delete it to restore the built-in default
+    // If the file was just a stub ("---\n---\n"), delete it to uncover the underlying package role
     if (isEmptyStub(updated)) {
       unlinkSync(file.path);
       reloadCustomAgents();
@@ -389,20 +350,31 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
 
     const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir();
 
-    const method = await ctx.ui.select("Creation method", [
-      "Generate with Claude (recommended)",
-      "Manual configuration",
-    ]);
-    if (!method) return;
-
-    if (method.startsWith("Generate")) {
-      await showGenerateWizard(ctx, targetDir);
-    } else {
+    if (getAllTypes().length === 0) {
+      ctx.ui.notify("Create your first role manually; generation needs an enabled custom role with the write tool.", "info");
       await showManualWizard(ctx, targetDir);
+      return;
     }
+
+    const method = await ctx.ui.select("Creation method", ["Generate with an agent", "Manual configuration"]);
+    if (!method) return;
+    if (method.startsWith("Generate")) {
+      const generators = getAvailableTypes().filter(canGenerate);
+      if (generators.length > 0) {
+        const generator = await ctx.ui.select("Choose an agent to generate the definition", generators);
+        if (generator) await showGenerateWizard(ctx, targetDir, generator);
+        return;
+      }
+      ctx.ui.notify("Generation needs an enabled custom role with the write tool. Use manual configuration instead.", "info");
+    }
+    await showManualWizard(ctx, targetDir);
   }
 
-  async function showGenerateWizard(ctx: ExtensionCommandContext, targetDir: string) {
+  function canGenerate(type: string): boolean {
+    return getToolNamesForType(type).includes("write") && !getAgentConfig(type)?.disallowedTools?.includes("write");
+  }
+
+  async function showGenerateWizard(ctx: ExtensionCommandContext, targetDir: string, generator: string) {
     const description = await ctx.ui.input("Describe what this agent should do");
     if (!description) return;
 
@@ -416,8 +388,6 @@ export function createAgentsMenu(deps: AgentsMenuDeps): { showAgentsMenu(ctx: Ex
       const overwrite = await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`);
       if (!overwrite) return;
     }
-
-    ctx.ui.notify("Generating agent definition...", "info");
 
     const generatePrompt = `Create a custom pi sub-agent definition file based on this description: "${description}"
 
@@ -433,12 +403,11 @@ tools: <comma-separated built-in tools: read, bash, edit, write, grep, find, ls.
 model: <optional model as "provider/modelId", e.g. "anthropic/claude-haiku-4-5". Omit to inherit parent model>
 thinking: <optional thinking level: ${THINKING_LEVELS.join(", ")}. Omit to inherit>
 max_turns: <optional max agentic turns. 0 or omit for unlimited (default)>
-prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to default prompt). Default: replace>
+prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to the parent prompt). Default: replace>
 extensions: <true (inherit all MCP/extension tools), false (none), or comma-separated names. Default: true>
 skills: <true (inherit all), false (none), or comma-separated skill names to preload into prompt. Default: true>
 disallowed_tools: <comma-separated tool names to block, even if otherwise available. Omit for none>
 inherit_context: <true to fork parent conversation into agent so it sees chat history. Default: false>
-run_in_background: <pin this agent to background (true) or foreground (false). Omit to follow the backgroundByDefault setting, which is background>
 output_transcript: <false to write no transcript file or path for this agent. Independent of persist_session. Default: true>
 isolated: <true for no extension/MCP tools, only built-in tools. Default: false>
 memory: <"user" (global), "project" (per-project), or "local" (gitignored per-project) for persistent memory. Omit for none>${
@@ -458,7 +427,7 @@ memory: <"user" (global), "project" (per-project), or "local" (gitignored per-pr
 Guidelines for choosing settings:
 - For read-only tasks (review, analysis): tools: read, bash, grep, find, ls
 - For code modification tasks: include edit, write
-- Use prompt_mode: append if the agent should keep the default system prompt and add specialization on top
+- Use prompt_mode: append if the agent should keep the parent system prompt and add specialization on top
 - Use prompt_mode: replace for fully custom agents with their own personality/instructions
 - Set inherit_context: true if the agent needs to know what was discussed in the parent conversation
 - Set isolated: true if the agent should NOT have access to MCP servers or other extensions
@@ -467,29 +436,18 @@ Guidelines for choosing settings:
 
 Write the file using the write tool. Only write the file, nothing else.`;
 
-    const { record } = await manager.spawnAndWait(pi, ctx, "general-purpose", generatePrompt, {
-      description: `Generate ${name} agent`,
-      maxTurns: 5,
-      // Exempt from maxConcurrentForeground. This runs from a modal wizard, not
-      // a tool call: it passes no signal, and Esc in `ctx.ui` never reaches the
-      // manager — so a user waiting behind a full pool would have no way to
-      // cancel at all. It is also one human action that cannot fan out, which
-      // is what the limit exists to bound. It still counts once started.
-      bypassQueue: true,
-    });
-
-    if (record.status === "error") {
-      ctx.ui.notify(`Generation failed: ${record.error}`, "warning");
+    // The wizard awaited user input; recheck the selected role before spawning.
+    reloadCustomAgents();
+    if (!getAvailableTypes().includes(generator) || !canGenerate(generator)) {
+      ctx.ui.notify(`Cannot generate with "${generator}": the role is unavailable or no longer has the write tool. Use manual configuration instead.`, "warning");
+      await showManualWizard(ctx, targetDir);
       return;
     }
-
-    reloadCustomAgents();
-
-    if (existsSync(targetPath)) {
-      ctx.ui.notify(`Created ${targetPath}`, "info");
-    } else {
-      ctx.ui.notify("Agent generation completed but file was not created. Check the agent output.", "warning");
-    }
+    const id = manager.spawn(pi, ctx, generator, generatePrompt, {
+      description: `Generate ${name} agent`,
+      maxTurns: 5,
+    });
+    ctx.ui.notify(`Agent generation requested (Agent ID: ${id}).`, "info");
   }
 
   async function showManualWizard(ctx: ExtensionCommandContext, targetDir: string) {

@@ -17,13 +17,10 @@ function cfg(partial: Partial<AgentConfig>): AgentConfig {
 }
 
 describe("sourceIndicator", () => {
-  it("badges each source, and leaves built-in defaults unmarked", () => {
+  it("badges each source, and leaves unknown roles unmarked", () => {
     expect(sourceIndicator(cfg({ source: "project" }))).toBe("•  ");
     expect(sourceIndicator(cfg({ source: "global" }))).toBe("◦  ");
     expect(sourceIndicator(cfg({ source: "package" }))).toBe("▪  ");
-    // A default leaves `source` undefined — the "default" member of the union is
-    // never assigned — so it must fall through to blank, not to some badge.
-    expect(sourceIndicator(cfg({ isDefault: true }))).toBe("   ");
     expect(sourceIndicator(undefined)).toBe("   ");
   });
 
@@ -31,7 +28,7 @@ describe("sourceIndicator", () => {
     expect(sourceIndicator(cfg({ source: "project", enabled: false }))).toBe("✕• ");
     expect(sourceIndicator(cfg({ source: "global", enabled: false }))).toBe("✕◦ ");
     expect(sourceIndicator(cfg({ source: "package", enabled: false }))).toBe("✕▪ ");
-    expect(sourceIndicator(cfg({ isDefault: true, enabled: false }))).toBe("✕  ");
+    expect(sourceIndicator(cfg({ enabled: false }))).toBe("✕  ");
   });
 });
 
@@ -48,13 +45,12 @@ describe("sourceLegend", () => {
     expect(sourceLegend([cfg({ source: "project" })])).toBe("• = project");
   });
 
-  it("returns an empty string for a defaults-only roster", () => {
-    expect(sourceLegend([cfg({ isDefault: true }), cfg({ isDefault: true }), undefined])).toBe("");
+  it("returns an empty string when no role has a source", () => {
+    expect(sourceLegend([undefined])).toBe("");
   });
 
   it("orders keys as the badge column does, and adds ✕ last", () => {
     const legend = sourceLegend([
-      cfg({ isDefault: true }),
       cfg({ source: "package" }),
       cfg({ source: "global", enabled: false }),
       cfg({ source: "project" }),
@@ -62,8 +58,8 @@ describe("sourceLegend", () => {
     expect(legend).toBe("• = project  ◦ = global  ▪ = package  ✕ = disabled");
   });
 
-  it("explains ✕ for a disabled built-in, which carries no source", () => {
-    expect(sourceLegend([cfg({ isDefault: true, enabled: false })])).toBe("✕ = disabled");
+  it("explains ✕ even when a disabled entry has no source", () => {
+    expect(sourceLegend([cfg({ enabled: false })])).toBe("✕ = disabled");
   });
 });
 

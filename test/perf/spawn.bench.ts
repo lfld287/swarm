@@ -97,8 +97,11 @@ describe("Agent tool — background spawn", () => {
     steered: false,
   }));
 
-  /** A freshly activated extension, reading agent files from `globalRedirect`. */
+  /** A freshly activated extension with one custom benchmark role. */
   function bootAgentTool() {
+    const dir = join(globalRedirect.dir, ".pi", "agents");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "perf-worker.md"), agentFile(0));
     const { pi, tools } = makePi();
     subagentsExtension(pi);
     return tools.get("Agent");
@@ -132,11 +135,11 @@ describe("Agent tool — background spawn", () => {
    * ±42% rme, replacing a known bias with unusable noise.
    */
   bench(
-    "general-purpose, run_in_background",
+    "spawn perf-worker",
     async () => {
       await agent.execute(
         `bench-${i++}`,
-        { subagent_type: "general-purpose", description: "bench spawn", prompt: "go", run_in_background: true },
+        { subagent_type: "perf-worker", description: "bench spawn", prompt: "go" },
         undefined,
         undefined,
         c,
